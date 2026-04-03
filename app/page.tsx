@@ -202,9 +202,6 @@ export default function Home() {
 
   const selectedOrderId = loggedInUser ? orders[selectedDay]?.[loggedInUser.id] : undefined
   const isSelectedDayLocked = isLocked(selectedOfferDay.date, weeklyOffer.cutoffHour, now)
-  const employeeCount = users.filter((user) => user.role === 'employee').length
-  const openDaysCount = weeklyOffer.days.filter((day) => !isLocked(day.date, weeklyOffer.cutoffHour, now)).length
-
   const adminBreakdown = mergedItems
     .map((item) => {
       const people = Object.entries(orders[selectedOfferDay.date] ?? {})
@@ -625,33 +622,7 @@ export default function Home() {
   if (!loggedInUser) {
     return (
       <main className="page-shell warm-grid flex min-h-screen items-center justify-center px-4 py-10 sm:px-6 lg:px-8">
-        <div className="relative z-10 grid w-full max-w-6xl gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-          <section className="glass-panel rounded-[2rem] p-6 sm:p-8 lg:p-10">
-            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-[var(--accent-strong)]">
-              {t.appName}
-            </p>
-            <h1 className="mt-4 font-[var(--font-display)] text-4xl font-bold leading-tight sm:text-5xl lg:text-6xl">
-              {t.heroTitle}
-            </h1>
-            <p className="mt-5 max-w-2xl text-base leading-7 text-[var(--muted)] sm:text-lg">
-              {t.heroBody}
-            </p>
-            <div className="mt-10 grid gap-4 sm:grid-cols-3">
-              <MetricCard value={employeeCount} label={t.heroMetricEmployees} />
-              <MetricCard value={weeklyOffer.days.length} label={t.heroMetricDays} />
-              <MetricCard value={openDaysCount} label={t.heroMetricOpenDays} />
-            </div>
-            <div className="mt-10 rounded-[1.75rem] border border-[var(--line)] bg-white/65 p-5">
-              <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
-                {t.demoAccess}
-              </p>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <DemoCard title={t.demoAdmin} credentials="admin / admin" />
-                <DemoCard title={t.demoEmployee} credentials="marko / malica ali nina / malica" />
-              </div>
-            </div>
-          </section>
-
+        <div className="relative z-10 w-full max-w-xl">
           <section className="glass-panel rounded-[2rem] p-6 sm:p-8 lg:p-10">
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
@@ -659,7 +630,13 @@ export default function Home() {
               </p>
               <LanguageSwitcher language={language} setLanguage={setLanguage} />
             </div>
-            <h2 className="mt-3 font-[var(--font-display)] text-3xl font-bold">{t.loginTitle}</h2>
+            <h1 className="mt-4 font-[var(--font-display)] text-4xl font-bold leading-tight sm:text-5xl">
+              {t.heroTitle}
+            </h1>
+            <p className="mt-5 text-base leading-7 text-[var(--muted)] sm:text-lg">
+              {t.heroBody}
+            </p>
+            <h2 className="mt-8 font-[var(--font-display)] text-3xl font-bold">{t.loginTitle}</h2>
             <p className="mt-3 text-sm leading-6 text-[var(--muted)]">{t.loginSubtitle}</p>
             <div className="mt-8 space-y-4">
               <Field label={t.username} value={username} onChange={setUsername} placeholder="npr. admin" />
@@ -1298,24 +1275,6 @@ function LocalizedFieldsPreview({
           </div>
         ) : null
       )}
-    </div>
-  )
-}
-
-function MetricCard({ value, label }: { value: number; label: string }) {
-  return (
-    <div className="rounded-[1.5rem] border border-[var(--line)] bg-white/70 p-4">
-      <p className="font-[var(--font-display)] text-xl font-semibold">{value}</p>
-      <p className="mt-2 text-sm text-[var(--muted)]">{label}</p>
-    </div>
-  )
-}
-
-function DemoCard({ title, credentials }: { title: string; credentials: string }) {
-  return (
-    <div className="rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm">
-      <p className="font-semibold">{title}</p>
-      <p className="mt-1 text-[var(--muted)]">{credentials}</p>
     </div>
   )
 }
