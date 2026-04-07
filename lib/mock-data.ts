@@ -41,7 +41,12 @@ export type WeeklyOffer = {
   alwaysAvailable: MenuItem[]
 }
 
-export type OrdersByDay = Record<string, Record<string, string>>
+export type OrderEntry = {
+  mealItemId: string
+  note?: string
+}
+
+export type OrdersByDay = Record<string, Record<string, OrderEntry>>
 
 const day = (sl: string, en: string, uk: string): LocalizedText => ({ sl, en, uk })
 const meal = (sl: string) => autoTranslateText(sl)
@@ -135,7 +140,15 @@ export const defaultWeeklyOffer: WeeklyOffer = {
 }
 
 export const defaultOrders: OrdersByDay = {
-  '2026-03-31': { u1: '2026-03-31-fit', u2: 'always-salad' },
-  '2026-04-01': { u1: '2026-04-01-fit', u2: '2026-04-01-vege', u3: '2026-04-01-fast', u4: 'always-fried-cheese' },
-  '2026-04-02': { u3: '2026-04-02-vege' },
+  '2026-03-31': {
+    u1: { mealItemId: '2026-03-31-fit' },
+    u2: { mealItemId: 'always-salad', note: 'brez mocarele' },
+  },
+  '2026-04-01': {
+    u1: { mealItemId: '2026-04-01-fit' },
+    u2: { mealItemId: '2026-04-01-vege' },
+    u3: { mealItemId: '2026-04-01-fast' },
+    u4: { mealItemId: 'always-fried-cheese' },
+  },
+  '2026-04-02': { u3: { mealItemId: '2026-04-02-vege' } },
 }

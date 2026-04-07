@@ -10,10 +10,130 @@ function isUuid(value: string) {
   )
 }
 
+function addDays(date: string, days: number) {
+  const next = new Date(`${date}T12:00:00`)
+  next.setDate(next.getDate() + days)
+  return next.toISOString().slice(0, 10)
+}
+
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
+      action?: 'save' | 'createWeek'
       weeklyOffer?: WeeklyOffer
+      startsOn?: string
+      sourceLabel?: { sl: string; en: string; uk: string }
+      copyAlwaysAvailable?: boolean
+      cutoffHour?: number
+    }
+
+    if (body.action === 'createWeek') {
+      if (!body.startsOn) {
+        return NextResponse.json({ error: 'Missing startsOn.' }, { status: 400 })
+      }
+
+      const supabase = getSupabaseServerClient()
+      const startsOn = body.startsOn
+      const endsOn = addDays(startsOn, 4)
+      const cutoffHour = body.cutoffHour ?? 10
+
+      const weekLabel = {
+        sl: `Tedenska ponudba ${startsOn} - ${endsOn}`,
+        en: `Weekly offer ${startsOn} - ${endsOn}`,
+        uk: `Тижнева пропозиція ${startsOn} - ${endsOn}`,
+      }
+
+      const sourceLabel = body.sourceLabel ?? {
+        sl: 'Ročni vnos novega tedna',
+        en: 'Manual entry for a new week',
+        uk: 'Ручне створення нового тижня',
+      }
+
+      const { data: currentActiveOffer } = await supabase
+        .from('weekly_offers')
+        .select('id')
+        .eq('is_active', true)
+        .order('starts_on', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      let alwaysAvailableItems:
+        | Array<{
+            category: string
+            title: WeeklyOffer['alwaysAvailable'][number]['title']
+            description: WeeklyOffer['alwaysAvailable'][number]['description'] | null
+            allergens: string | null
+            sort_order: number
+          }>
+        = []
+
+      if (body.copyAlwaysAvailable && currentActiveOffer?.id) {
+        const { data: currentAlwaysItems, error: currentAlwaysItemsError } = await supabase
+          .from('meal_items')
+          .select('category,title,description,allergens,sort_order')
+          .eq('offer_id', currentActiveOffer.id)
+          .eq('is_always_available', true)
+          .order('sort_order')
+
+        if (currentAlwaysItemsError) {
+          throw currentAlwaysItemsError
+        }
+
+        alwaysAvailableItems =
+          currentAlwaysItems?.map((item) => ({
+            category: item.category,
+            title: item.title,
+            description: item.description,
+            allergens: item.allergens,
+            sort_order: item.sort_order ?? 100,
+          })) ?? []
+      }
+
+      await supabase.from('weekly_offers').update({ is_active: false }).eq('is_active', true)
+
+      const { data: insertedOffer, error: insertOfferError } = await supabase
+        .from('weekly_offers')
+        .insert({
+          week_label: weekLabel,
+          source_label: sourceLabel,
+          cutoff_hour: cutoffHour,
+          starts_on: startsOn,
+          ends_on: endsOn,
+          is_active: true,
+        })
+        .select('id')
+        .single()
+
+      if (insertOfferError || !insertedOffer) {
+        throw insertOfferError || new Error('Offer insert failed.')
+      }
+
+      if (alwaysAvailableItems.length > 0) {
+        const { error: insertAlwaysError } = await supabase.from('meal_items').insert(
+          alwaysAvailableItems.map((item) => ({
+            offer_id: insertedOffer.id,
+            service_date: null,
+            category: item.category,
+            title: item.title,
+            description: item.description,
+            allergens: item.allergens,
+            is_always_available: true,
+            sort_order: item.sort_order,
+          }))
+        )
+
+        if (insertAlwaysError) {
+          throw insertAlwaysError
+        }
+      }
+
+      const appData = await loadAppData()
+
+      return NextResponse.json({
+        ok: true,
+        weeklyOffer: appData.weeklyOffer,
+        orders: appData.orders,
+      })
     }
 
     const weeklyOffer = body.weeklyOffer

@@ -148,6 +148,12 @@ function localizedDraftFromSlovenian(value: string) {
   }
 }
 
+function addDaysToIsoDate(dateString: string, days: number) {
+  const next = new Date(`${dateString}T12:00:00`)
+  next.setDate(next.getDate() + days)
+  return next.toISOString().slice(0, 10)
+}
+
 export default function Home() {
   const [isReady, setIsReady] = useState(false)
   const [language, setLanguage] = useState<Language>('sl')
@@ -161,6 +167,11 @@ export default function Home() {
   const [selectedDay, setSelectedDay] = useState(defaultWeeklyOffer.days[0].date)
   const [now, setNow] = useState(new Date())
   const [pendingMeal, setPendingMeal] = useState<MenuItem | null>(null)
+  const [pendingMealNote, setPendingMealNote] = useState('')
+  const [pendingOrderRemoval, setPendingOrderRemoval] = useState<string | null>(null)
+  const [newWeekStart, setNewWeekStart] = useState(addDaysToIsoDate(new Date().toISOString().slice(0, 10), 7))
+  const [newWeekSource, setNewWeekSource] = useState('')
+  const [copyAlwaysAvailableToNewWeek, setCopyAlwaysAvailableToNewWeek] = useState(true)
   const [weeklyDraft, setWeeklyDraft] = useState<WeeklyDraft>(() => buildWeeklyDraft(defaultWeeklyOffer))
   const [alwaysAvailableDraft, setAlwaysAvailableDraft] = useState<AlwaysAvailableDraftItem[]>(() =>
     buildAlwaysAvailableDraft(defaultWeeklyOffer)
@@ -189,6 +200,21 @@ export default function Home() {
   }, [])
 
   const t = translations[language]
+  type AdminOrderPerson = { user: UserProfile; note: string | undefined }
+  const removeMealModal = {
+    sl: {
+      title: 'Potrdi odjavo',
+      body: 'Ali res zelis odjaviti malico za ta dan?',
+    },
+    en: {
+      title: 'Confirm cancellation',
+      body: 'Do you really want to cancel your meal for this day?',
+    },
+    uk: {
+      title: 'Підтвердити скасування',
+      body: 'Ви справді хочете скасувати замовлення на цей день?',
+    },
+  } satisfies Record<Language, { title: string; body: string }>
 
   const selectedOfferDay = useMemo(
     () => weeklyOffer.days.find((day) => day.date === selectedDay) ?? weeklyOffer.days[0],
@@ -200,14 +226,18 @@ export default function Home() {
     [selectedOfferDay, weeklyOffer.alwaysAvailable]
   )
 
-  const selectedOrderId = loggedInUser ? orders[selectedDay]?.[loggedInUser.id] : undefined
+  const selectedOrder = loggedInUser ? orders[selectedDay]?.[loggedInUser.id] : undefined
+  const selectedOrderId = selectedOrder?.mealItemId
   const isSelectedDayLocked = isLocked(selectedOfferDay.date, weeklyOffer.cutoffHour, now)
   const adminBreakdown = mergedItems
     .map((item) => {
       const people = Object.entries(orders[selectedOfferDay.date] ?? {})
-        .filter(([, itemId]) => itemId === item.id)
-        .map(([userId]) => users.find((user) => user.id === userId))
-        .filter((user): user is UserProfile => Boolean(user))
+        .filter(([, order]) => order.mealItemId === item.id)
+        .map(([userId, order]) => {
+          const user = users.find((candidate) => candidate.id === userId)
+          return user ? { user, note: order.note } : null
+        })
+        .filter((entry): entry is AdminOrderPerson => Boolean(entry))
 
       return { item, people }
     })
@@ -357,6 +387,7 @@ export default function Home() {
           serviceDate: selectedOfferDay.date,
           userId: loggedInUser.id,
           mealItemId: itemId,
+          note: pendingMeal?.isAlwaysAvailable ? pendingMealNote : '',
         }),
       })
 
@@ -373,7 +404,10 @@ export default function Home() {
       ...current,
       [selectedOfferDay.date]: {
         ...(current[selectedOfferDay.date] ?? {}),
-        [loggedInUser.id]: itemId,
+        [loggedInUser.id]: {
+          mealItemId: itemId,
+          note: pendingMeal?.isAlwaysAvailable ? pendingMealNote.trim() || undefined : undefined,
+        },
       },
     }))
 
@@ -383,6 +417,102 @@ export default function Home() {
       })
     )
     setPendingMeal(null)
+    setPendingMealNote('')
+  }
+
+  const removeOrder = async (dayDate: string) => {
+    if (!loggedInUser || loggedInUser.role !== 'employee') return
+
+    const day = weeklyOffer.days.find((entry) => entry.date === dayDate)
+
+    if (!day) {
+      return
+    }
+
+    if (isLocked(dayDate, weeklyOffer.cutoffHour, now)) {
+      setMessage(
+        formatTranslation(t.dayLockedMessage, {
+          day: getLocalizedText(day.label, language),
+          hour: weeklyOffer.cutoffHour,
+        })
+      )
+      return
+    }
+
+    try {
+      const response = await fetch('/api/orders', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          serviceDate: dayDate,
+          userId: loggedInUser.id,
+        }),
+      })
+
+      if (!response.ok) {
+        setMessage('Odjava malice iz baze ni uspela.')
+        return
+      }
+    } catch {
+      setMessage('Odjava malice iz baze ni uspela.')
+      return
+    }
+
+    setOrders((current) => ({
+      ...current,
+      [dayDate]: Object.fromEntries(
+          Object.entries(current[dayDate] ?? {}).filter(([userId]) => userId !== loggedInUser.id)
+      ),
+    }))
+
+    setMessage(`${t.remove}: ${getLocalizedText(day.label, language).toLowerCase()}`)
+  }
+
+  const createNewWeek = async () => {
+    try {
+      const response = await fetch('/api/weekly-offer', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'createWeek',
+          startsOn: newWeekStart,
+          cutoffHour: weeklyOffer.cutoffHour,
+          copyAlwaysAvailable: copyAlwaysAvailableToNewWeek,
+          sourceLabel: newWeekSource.trim()
+            ? localizedDraftFromSlovenian(newWeekSource)
+            : undefined,
+        }),
+      })
+
+      if (!response.ok) {
+        setMessage('Ustvarjanje novega tedna ni uspelo.')
+        return
+      }
+
+      const data = (await response.json()) as {
+        weeklyOffer?: WeeklyOffer
+        orders?: OrdersByDay
+      }
+
+      if (!data.weeklyOffer) {
+        setMessage('Ustvarjanje novega tedna ni uspelo.')
+        return
+      }
+
+      setWeeklyOffer(data.weeklyOffer)
+      setWeeklyDraft(buildWeeklyDraft(data.weeklyOffer))
+      setAlwaysAvailableDraft(buildAlwaysAvailableDraft(data.weeklyOffer))
+      setOrders(data.orders ?? {})
+      setSelectedDay(getInitialSelectedDay(data.weeklyOffer))
+      setEditingCells({})
+      setMessage('Novi teden je ustvarjen in nastavljen kot aktiven.')
+    } catch {
+      setMessage('Ustvarjanje novega tedna ni uspelo.')
+    }
   }
 
   const saveWeeklyOffer = async () => {
@@ -520,7 +650,7 @@ export default function Home() {
         Object.entries(current).map(([dateKey, dailyOrders]) => [
           dateKey,
           Object.fromEntries(
-            Object.entries(dailyOrders).filter(([, menuId]) => menuId !== itemId)
+            Object.entries(dailyOrders).filter(([, order]) => order.mealItemId !== itemId)
           ),
         ])
       )
@@ -711,51 +841,65 @@ export default function Home() {
               {weeklyOffer.days.map((day) => {
                 const locked = isLocked(day.date, weeklyOffer.cutoffHour, now)
                 const dayOrders = Object.keys(orders[day.date] ?? {}).length
-                const userOrderId = loggedInUser ? orders[day.date]?.[loggedInUser.id] : undefined
+                const userOrder = loggedInUser ? orders[day.date]?.[loggedInUser.id] : undefined
+                const userOrderId = userOrder?.mealItemId
                 const chosenItem = userOrderId
                   ? [...day.items, ...weeklyOffer.alwaysAvailable].find((item) => item.id === userOrderId)
                   : undefined
                 const needsAttention = loggedInUser.role === 'employee' && !chosenItem
+                const dayCardClass = `w-full rounded-[1.5rem] border px-4 py-4 text-left transition ${
+                  selectedDay === day.date
+                    ? 'border-orange-300 bg-orange-50'
+                    : needsAttention
+                      ? 'border-rose-200 bg-rose-50/90 hover:bg-rose-50'
+                      : 'border-[var(--line)] bg-white/70 hover:bg-white'
+                }`
 
                 return (
-                  <button
-                    key={day.date}
-                    onClick={() => setSelectedDay(day.date)}
-                    className={`w-full rounded-[1.5rem] border px-4 py-4 text-left transition ${
-                      selectedDay === day.date
-                        ? 'border-orange-300 bg-orange-50'
-                        : needsAttention
-                          ? 'border-rose-200 bg-rose-50/90 hover:bg-rose-50'
-                          : 'border-[var(--line)] bg-white/70 hover:bg-white'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="font-[var(--font-display)] text-lg font-semibold">
-                          {getLocalizedText(day.label, language)}
-                        </p>
-                        <p className="mt-1 text-sm text-[var(--muted)]">{formatDate(day.date, language)}</p>
+                  <div key={day.date} className={dayCardClass}>
+                    <button type="button" onClick={() => setSelectedDay(day.date)} className="w-full text-left">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="font-[var(--font-display)] text-lg font-semibold">
+                            {getLocalizedText(day.label, language)}
+                          </p>
+                          <p className="mt-1 text-sm text-[var(--muted)]">{formatDate(day.date, language)}</p>
+                        </div>
+                        <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] ${locked ? 'bg-stone-200 text-stone-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                          {locked ? t.locked : t.open}
+                        </span>
                       </div>
-                      <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] ${locked ? 'bg-stone-200 text-stone-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                        {locked ? t.locked : t.open}
-                      </span>
-                    </div>
-                    <p className="mt-3 text-sm text-[var(--muted)]">
-                      {day.items.length + weeklyOffer.alwaysAvailable.length} {t.availableMeals}
-                    </p>
-                    <p className="mt-1 text-sm text-[var(--muted)]">
-                      {dayOrders} {t.registrationsForDay}
-                    </p>
+                      <p className="mt-3 text-sm text-[var(--muted)]">
+                        {day.items.length + weeklyOffer.alwaysAvailable.length} {t.availableMeals}
+                      </p>
+                      <p className="mt-1 text-sm text-[var(--muted)]">
+                        {dayOrders} {t.registrationsForDay}
+                      </p>
+                    </button>
                     {loggedInUser.role === 'employee' ? (
-                      <div className={`mt-4 rounded-2xl px-3 py-2 text-sm ${
+                      <div className={`mt-4 flex items-center justify-between gap-3 rounded-2xl px-3 py-2 text-sm ${
                         chosenItem ? 'bg-emerald-50 text-emerald-900' : 'bg-rose-100 text-rose-800'
                       }`}>
-                        {chosenItem
-                          ? `${t.selectedForDay} ${getLocalizedText(chosenItem.title, language)}`
-                          : t.nothingSelected}
+                        <span className="min-w-0 flex-1 pr-2">
+                          {chosenItem
+                            ? `${t.selectedForDay} ${getLocalizedText(chosenItem.title, language)}`
+                            : t.nothingSelected}
+                        </span>
+                        {chosenItem && !locked ? (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              setPendingOrderRemoval(day.date)
+                            }}
+                            className="shrink-0 rounded-xl border border-emerald-200 bg-white/90 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-800 transition hover:bg-white"
+                          >
+                            {t.remove}
+                          </button>
+                        ) : null}
                       </div>
                     ) : null}
-                  </button>
+                  </div>
                 )
               })}
             </div>
@@ -785,7 +929,7 @@ export default function Home() {
               <div className="mt-6 grid gap-4">
                 {mergedItems.map((item) => {
                   const selected = selectedOrderId === item.id
-                  const count = Object.values(orders[selectedDay] ?? {}).filter((orderId) => orderId === item.id).length
+                  const count = Object.values(orders[selectedDay] ?? {}).filter((order) => order.mealItemId === item.id).length
 
                   return (
                     <article key={item.id} className={`rounded-[1.6rem] border p-5 transition ${selected ? 'border-orange-300 bg-orange-50' : 'border-[var(--line)] bg-white/75'}`}>
@@ -814,7 +958,10 @@ export default function Home() {
                           </span>
                           {loggedInUser.role === 'employee' ? (
                             <button
-                              onClick={() => setPendingMeal(item)}
+                              onClick={() => {
+                                setPendingMeal(item)
+                                setPendingMealNote(selected && selectedOrder?.note ? selectedOrder.note : '')
+                              }}
                               disabled={isSelectedDayLocked}
                               className="relative z-10 rounded-2xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[var(--accent-strong)] active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-stone-300"
                             >
@@ -865,15 +1012,62 @@ export default function Home() {
                             </span>
                           </div>
                           <div className="mt-4 flex flex-wrap gap-2">
-                            {people.map((person) => (
-                              <span key={person.id} className="rounded-full border border-[var(--line)] bg-white px-3 py-1.5 text-sm">
-                                {person.fullName}
+                            {people.map(({ user, note }) => (
+                              <span key={user.id} className="rounded-full border border-[var(--line)] bg-white px-3 py-1.5 text-sm">
+                                {user.fullName}
+                                {note ? ` (${note})` : ''}
                               </span>
                             ))}
                           </div>
                         </div>
                       ))
                     )}
+                  </div>
+                </div>
+
+                <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
+                  <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
+                    Novi teden
+                  </p>
+                  <h3 className="mt-2 font-[var(--font-display)] text-2xl font-bold">Priprava naslednjega tedna</h3>
+                  <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+                    Ustvari nov aktiven teden. Prejsnji ostane shranjen v arhivu, uporabniki pa bodo videli samo novega.
+                  </p>
+                  <div className="mt-5 grid gap-4">
+                    <label className="block">
+                      <span className="mb-2 block text-sm font-medium text-[var(--muted)]">Zacetek tedna</span>
+                      <input
+                        type="date"
+                        value={newWeekStart}
+                        onChange={(event) => setNewWeekStart(event.target.value)}
+                        className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block text-sm font-medium text-[var(--muted)]">Vir ponudbe</span>
+                      <input
+                        value={newWeekSource}
+                        onChange={(event) => setNewWeekSource(event.target.value)}
+                        placeholder="npr. Excel ponudba 6.4.-10.4.2026"
+                        className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                      />
+                    </label>
+                    <label className="flex items-center gap-3 rounded-2xl border border-[var(--line)] bg-white/70 px-4 py-3 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={copyAlwaysAvailableToNewWeek}
+                        onChange={(event) => setCopyAlwaysAvailableToNewWeek(event.target.checked)}
+                      />
+                      <span>Prenesi stalno ponudbo v novi teden</span>
+                    </label>
+                  </div>
+                  <div className="mt-5">
+                    <button
+                      onClick={createNewWeek}
+                      className="rounded-2xl bg-[var(--accent)] px-5 py-3 font-semibold text-white transition hover:bg-[var(--accent-strong)]"
+                    >
+                      Ustvari nov teden
+                    </button>
                   </div>
                 </div>
 
@@ -1033,10 +1227,30 @@ export default function Home() {
           <ConfirmModal
             title={t.chooseMealTitle}
             body={`${t.chooseMealText} ${getLocalizedText(pendingMeal.title, language)}`}
+            noteLabel={pendingMeal.isAlwaysAvailable ? 'Opomba' : undefined}
+            notePlaceholder={pendingMeal.isAlwaysAvailable ? 'npr. brez paradižnika' : undefined}
+            noteValue={pendingMealNote}
+            onNoteChange={setPendingMealNote}
             cancelLabel={t.cancel}
             confirmLabel={t.confirm}
-            onCancel={() => setPendingMeal(null)}
+            onCancel={() => {
+              setPendingMeal(null)
+              setPendingMealNote('')
+            }}
             onConfirm={() => placeOrder(pendingMeal.id)}
+          />
+        ) : null}
+        {pendingOrderRemoval ? (
+          <ConfirmModal
+            title={removeMealModal[language].title}
+            body={removeMealModal[language].body}
+            cancelLabel={t.cancel}
+            confirmLabel={t.confirm}
+            onCancel={() => setPendingOrderRemoval(null)}
+            onConfirm={() => {
+              void removeOrder(pendingOrderRemoval)
+              setPendingOrderRemoval(null)
+            }}
           />
         ) : null}
       </div>
@@ -1290,6 +1504,10 @@ function MessageBox({ message, className }: { message: string; className: string
 function ConfirmModal({
   title,
   body,
+  noteLabel,
+  notePlaceholder,
+  noteValue,
+  onNoteChange,
   cancelLabel,
   confirmLabel,
   onCancel,
@@ -1297,6 +1515,10 @@ function ConfirmModal({
 }: {
   title: string
   body: string
+  noteLabel?: string
+  notePlaceholder?: string
+  noteValue?: string
+  onNoteChange?: (value: string) => void
   cancelLabel: string
   confirmLabel: string
   onCancel: () => void
@@ -1307,6 +1529,18 @@ function ConfirmModal({
       <div className="glass-panel w-full max-w-md rounded-[2rem] p-6">
         <h3 className="font-[var(--font-display)] text-2xl font-bold">{title}</h3>
         <p className="mt-3 text-sm leading-6 text-[var(--muted)]">{body}</p>
+        {noteLabel && onNoteChange ? (
+          <label className="mt-4 block">
+            <span className="mb-2 block text-sm font-medium text-[var(--muted)]">{noteLabel}</span>
+            <textarea
+              value={noteValue ?? ''}
+              onChange={(event) => onNoteChange(event.target.value)}
+              rows={3}
+              placeholder={notePlaceholder}
+              className="w-full resize-y rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+            />
+          </label>
+        ) : null}
         <div className="mt-6 flex gap-3">
           <button onClick={onCancel} className="flex-1 rounded-2xl border border-[var(--line)] bg-white px-4 py-3 font-semibold">
             {cancelLabel}

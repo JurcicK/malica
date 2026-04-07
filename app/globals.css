@@ -52,6 +52,14 @@ select {
   touch-action: manipulation;
 }
 
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
 ::selection {
   background: rgba(221, 107, 32, 0.18);
 }

@@ -38,6 +38,7 @@ type DbOrder = {
   service_date: string
   user_id: string
   meal_item_id: string
+  note: string | null
 }
 
 function asLocalizedText(value: LocalizedText | string | null | undefined) {
@@ -166,7 +167,7 @@ export async function loadAppData() {
         .order('sort_order'),
       supabase
         .from('orders')
-        .select('service_date,user_id,meal_item_id')
+        .select('service_date,user_id,meal_item_id,note')
         .gte('service_date', activeOffer.starts_on)
         .lte('service_date', activeOffer.ends_on),
     ])
@@ -177,7 +178,10 @@ export async function loadAppData() {
   const mappedOrders = ((orders as DbOrder[] | null) ?? []).reduce<OrdersByDay>((acc, order) => {
     acc[order.service_date] = {
       ...(acc[order.service_date] ?? {}),
-      [order.user_id]: order.meal_item_id,
+      [order.user_id]: {
+        mealItemId: order.meal_item_id,
+        note: order.note || undefined,
+      },
     }
     return acc
   }, {})
