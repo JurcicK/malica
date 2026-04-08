@@ -229,6 +229,20 @@ export default function Home() {
   const selectedOrder = loggedInUser ? orders[selectedDay]?.[loggedInUser.id] : undefined
   const selectedOrderId = selectedOrder?.mealItemId
   const isSelectedDayLocked = isLocked(selectedOfferDay.date, weeklyOffer.cutoffHour, now)
+  const normalizeDepartment = (department: string) => {
+    const normalized = department.trim().toLowerCase()
+
+    if (normalized === 'delavnica') {
+      return 'Delavnica'
+    }
+
+    if (normalized === 'pisarne' || normalized === 'pisarna') {
+      return 'Pisarne'
+    }
+
+    return department.trim() || 'Ostalo'
+  }
+
   const adminBreakdown = mergedItems
     .map((item) => {
       const people = Object.entries(orders[selectedOfferDay.date] ?? {})
@@ -242,6 +256,47 @@ export default function Home() {
       return { item, people }
     })
     .filter(({ people }) => people.length > 0)
+  const adminByDepartment = Object.entries(
+    adminBreakdown.reduce<
+      Record<
+        string,
+        Array<{
+          item: (typeof adminBreakdown)[number]['item']
+          people: AdminOrderPerson[]
+        }>
+      >
+    >((acc, entry) => {
+      const groupedPeople = entry.people.reduce<Record<string, AdminOrderPerson[]>>((grouped, person) => {
+        const department = normalizeDepartment(person.user.department)
+        grouped[department] = [...(grouped[department] ?? []), person]
+        return grouped
+      }, {})
+
+      for (const [department, people] of Object.entries(groupedPeople)) {
+        acc[department] = [
+          ...(acc[department] ?? []),
+          {
+            item: entry.item,
+            people,
+          },
+        ]
+      }
+
+      return acc
+    }, {})
+  ).sort(([a], [b]) => {
+    const order = ['Delavnica', 'Pisarne', 'Ostalo']
+    const aIndex = order.indexOf(a)
+    const bIndex = order.indexOf(b)
+    const safeA = aIndex === -1 ? order.length : aIndex
+    const safeB = bIndex === -1 ? order.length : bIndex
+
+    if (safeA !== safeB) {
+      return safeA - safeB
+    }
+
+    return a.localeCompare(b, 'sl')
+  })
 
   const translateLocalizedText = async (value: string) => {
     if (!value.trim()) {
@@ -991,32 +1046,44 @@ export default function Home() {
                   </p>
                   <h3 className="mt-2 font-[var(--font-display)] text-2xl font-bold">{t.whoOrdered}</h3>
                   <div className="mt-5 space-y-4">
-                    {adminBreakdown.length === 0 ? (
+                    {adminByDepartment.length === 0 ? (
                       <div className="rounded-[1.5rem] border border-[var(--line)] bg-white/70 p-4 text-sm text-[var(--muted)]">
                         {t.noOrders}
                       </div>
                     ) : (
-                      adminBreakdown.map(({ item, people }) => (
-                        <div key={item.id} className="rounded-[1.5rem] border border-[var(--line)] bg-white/75 p-4">
-                          <div className="flex items-start justify-between gap-4">
-                            <div>
-                              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
-                                {t.categoryLabels[item.category]}
-                              </p>
-                              <p className="mt-2 font-[var(--font-display)] text-lg font-semibold">
-                                {getLocalizedText(item.title, language)}
-                              </p>
-                            </div>
+                      adminByDepartment.map(([department, meals]) => (
+                        <div key={department} className="rounded-[1.5rem] border border-[var(--line)] bg-white/75 p-4">
+                          <div className="flex items-center justify-between gap-4">
+                            <p className="font-[var(--font-display)] text-xl font-semibold">{department}</p>
                             <span className="rounded-full bg-orange-100 px-3 py-1 text-sm font-semibold text-orange-800">
-                              {people.length}
+                              {meals.reduce((sum, meal) => sum + meal.people.length, 0)}
                             </span>
                           </div>
-                          <div className="mt-4 flex flex-wrap gap-2">
-                            {people.map(({ user, note }) => (
-                              <span key={user.id} className="rounded-full border border-[var(--line)] bg-white px-3 py-1.5 text-sm">
-                                {user.fullName}
-                                {note ? ` (${note})` : ''}
-                              </span>
+                          <div className="mt-4 space-y-4">
+                            {meals.map(({ item, people }) => (
+                              <div key={`${department}-${item.id}`} className="rounded-[1.2rem] border border-[var(--line)] bg-white p-4">
+                                <div className="flex items-start justify-between gap-4">
+                                  <div>
+                                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                                      {t.categoryLabels[item.category]}
+                                    </p>
+                                    <p className="mt-2 font-[var(--font-display)] text-lg font-semibold">
+                                      {getLocalizedText(item.title, language)}
+                                    </p>
+                                  </div>
+                                  <span className="rounded-full border border-[var(--line)] bg-orange-50 px-3 py-1 text-sm font-semibold text-orange-800">
+                                    {people.length}
+                                  </span>
+                                </div>
+                                <div className="mt-4 flex flex-wrap gap-2">
+                                  {people.map(({ user, note }) => (
+                                    <span key={user.id} className="rounded-full border border-[var(--line)] bg-white px-3 py-1.5 text-sm">
+                                      {user.fullName}
+                                      {note ? ` (${note})` : ''}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
                             ))}
                           </div>
                         </div>
