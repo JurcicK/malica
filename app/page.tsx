@@ -50,6 +50,10 @@ function isLocked(dateString: string, cutoffHour: number, now: Date) {
   return now >= new Date(`${dateString}T${String(cutoffHour).padStart(2, '0')}:00:00`)
 }
 
+function isPastDay(dateString: string, now: Date) {
+  return dateString < now.toISOString().slice(0, 10)
+}
+
 function getInitialSelectedDay(offer: WeeklyOffer) {
   const today = new Date()
   const todayIso = today.toISOString().slice(0, 10)
@@ -216,9 +220,20 @@ export default function Home() {
     },
   } satisfies Record<Language, { title: string; body: string }>
 
+  const visibleOfferDays = useMemo(
+    () =>
+      loggedInUser?.role === 'employee'
+        ? weeklyOffer.days.filter((day) => !isPastDay(day.date, now))
+        : weeklyOffer.days,
+    [loggedInUser?.role, now, weeklyOffer.days]
+  )
+  const activeSelectedDay = useMemo(() => {
+    const selectedStillVisible = visibleOfferDays.some((day) => day.date === selectedDay)
+    return selectedStillVisible ? selectedDay : visibleOfferDays[0]?.date ?? selectedDay
+  }, [selectedDay, visibleOfferDays])
   const selectedOfferDay = useMemo(
-    () => weeklyOffer.days.find((day) => day.date === selectedDay) ?? weeklyOffer.days[0],
-    [selectedDay, weeklyOffer.days]
+    () => visibleOfferDays.find((day) => day.date === activeSelectedDay) ?? visibleOfferDays[0] ?? weeklyOffer.days[0],
+    [activeSelectedDay, visibleOfferDays, weeklyOffer.days]
   )
 
   const mergedItems = useMemo(
@@ -226,7 +241,7 @@ export default function Home() {
     [selectedOfferDay, weeklyOffer.alwaysAvailable]
   )
 
-  const selectedOrder = loggedInUser ? orders[selectedDay]?.[loggedInUser.id] : undefined
+  const selectedOrder = loggedInUser ? orders[activeSelectedDay]?.[loggedInUser.id] : undefined
   const selectedOrderId = selectedOrder?.mealItemId
   const isSelectedDayLocked = isLocked(selectedOfferDay.date, weeklyOffer.cutoffHour, now)
   const normalizeDepartment = (department: string) => {
@@ -297,6 +312,10 @@ export default function Home() {
 
     return a.localeCompare(b, 'sl')
   })
+  const adminDepartmentSummary = adminByDepartment.map(([department, meals]) => ({
+    department,
+    total: meals.reduce((sum, meal) => sum + meal.people.length, 0),
+  }))
 
   const translateLocalizedText = async (value: string) => {
     if (!value.trim()) {
@@ -893,7 +912,7 @@ export default function Home() {
               {t.days}
             </p>
             <div className="mt-4 space-y-3">
-              {weeklyOffer.days.map((day) => {
+              {visibleOfferDays.map((day) => {
                 const locked = isLocked(day.date, weeklyOffer.cutoffHour, now)
                 const dayOrders = Object.keys(orders[day.date] ?? {}).length
                 const userOrder = loggedInUser ? orders[day.date]?.[loggedInUser.id] : undefined
@@ -903,7 +922,7 @@ export default function Home() {
                   : undefined
                 const needsAttention = loggedInUser.role === 'employee' && !chosenItem
                 const dayCardClass = `w-full rounded-[1.5rem] border px-4 py-4 text-left transition ${
-                  selectedDay === day.date
+                  activeSelectedDay === day.date
                     ? 'border-orange-300 bg-orange-50'
                     : needsAttention
                       ? 'border-rose-200 bg-rose-50/90 hover:bg-rose-50'
@@ -984,7 +1003,7 @@ export default function Home() {
               <div className="mt-6 grid gap-4">
                 {mergedItems.map((item) => {
                   const selected = selectedOrderId === item.id
-                  const count = Object.values(orders[selectedDay] ?? {}).filter((order) => order.mealItemId === item.id).length
+                  const count = Object.values(orders[activeSelectedDay] ?? {}).filter((order) => order.mealItemId === item.id).length
 
                   return (
                     <article key={item.id} className={`rounded-[1.6rem] border p-5 transition ${selected ? 'border-orange-300 bg-orange-50' : 'border-[var(--line)] bg-white/75'}`}>
@@ -1024,7 +1043,7 @@ export default function Home() {
                             </button>
                           ) : (
                             <button
-                              onClick={() => removeMeal(item.id, item.isAlwaysAvailable ? undefined : selectedDay)}
+                              onClick={() => removeMeal(item.id, item.isAlwaysAvailable ? undefined : activeSelectedDay)}
                               className="rounded-2xl border border-[var(--line)] bg-white px-4 py-2.5 text-sm font-semibold transition hover:bg-orange-50"
                             >
                               {t.remove}
@@ -1045,6 +1064,18 @@ export default function Home() {
                     {t.adminOverview}
                   </p>
                   <h3 className="mt-2 font-[var(--font-display)] text-2xl font-bold">{t.whoOrdered}</h3>
+                  {adminDepartmentSummary.length > 0 ? (
+                    <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                      {adminDepartmentSummary.map(({ department, total }) => (
+                        <div key={department} className="rounded-[1.2rem] border border-[var(--line)] bg-white p-4">
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                            {department}
+                          </p>
+                          <p className="mt-2 font-[var(--font-display)] text-2xl font-semibold">{total}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                   <div className="mt-5 space-y-4">
                     {adminByDepartment.length === 0 ? (
                       <div className="rounded-[1.5rem] border border-[var(--line)] bg-white/70 p-4 text-sm text-[var(--muted)]">
