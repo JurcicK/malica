@@ -22,7 +22,7 @@ export async function POST(request: Request) {
       action?: 'save' | 'createWeek'
       weeklyOffer?: WeeklyOffer
       startsOn?: string
-      sourceLabel?: { sl: string; en: string; uk: string }
+      sourceLabel?: { sl: string; en: string; uk: string; bs: string }
       copyAlwaysAvailable?: boolean
       cutoffHour?: number
     }
@@ -41,12 +41,14 @@ export async function POST(request: Request) {
         sl: `Tedenska ponudba ${startsOn} - ${endsOn}`,
         en: `Weekly offer ${startsOn} - ${endsOn}`,
         uk: `Тижнева пропозиція ${startsOn} - ${endsOn}`,
+        bs: `Sedmična ponuda ${startsOn} - ${endsOn}`,
       }
 
       const sourceLabel = body.sourceLabel ?? {
         sl: 'Ročni vnos novega tedna',
         en: 'Manual entry for a new week',
         uk: 'Ручне створення нового тижня',
+        bs: 'Ručni unos novog tjedna',
       }
 
       const { data: currentActiveOffer } = await supabase
