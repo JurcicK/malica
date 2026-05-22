@@ -18,7 +18,7 @@ function fallbackResponse(text: string) {
   }
 }
 
-async function myMemoryTranslate(text: string, target: 'en' | 'uk', email?: string) {
+async function myMemoryTranslate(text: string, target: 'en' | 'uk' | 'bs', email?: string) {
   const params = new URLSearchParams({
     q: text,
     langpair: `sl|${target}`,
@@ -58,9 +58,10 @@ export async function POST(request: Request) {
     const email = process.env.MYMEMORY_EMAIL
 
     try {
-      const [en, uk] = await Promise.all([
+      const [en, uk, bs] = await Promise.all([
         myMemoryTranslate(text, 'en', email),
         myMemoryTranslate(text, 'uk', email),
+        myMemoryTranslate(text, 'bs', email),
       ])
 
       return NextResponse.json({
@@ -68,6 +69,7 @@ export async function POST(request: Request) {
           sl: text,
           en,
           uk,
+          bs,
         },
         usedFallback: false,
       })

@@ -20,7 +20,7 @@ import {
 import { formatTranslation, translations, type Language } from '../lib/translations'
 
 const weeklyCategories: MenuCategory[] = ['bodi fit', 'vege', 'ali pa..', 'na hitro...']
-const emptyLocalizedText = (): LocalizedText => ({ sl: '', en: '', uk: '' })
+const emptyLocalizedText = (): LocalizedText => ({ sl: '', en: '', uk: '', bs: '' })
 
 type WeeklyDraftCell = LocalizedText
 type WeeklyDraft = Record<string, Record<MenuCategory, WeeklyDraftCell>>
@@ -37,6 +37,7 @@ function formatDate(dateString: string, language: Language) {
     sl: 'sl-SI',
     en: 'en-US',
     uk: 'uk-UA',
+    bs: 'bs-BA',
   }
 
   return new Intl.DateTimeFormat(localeMap[language], {
@@ -65,9 +66,7 @@ function getInitialSelectedDay(offer: WeeklyOffer) {
   )
 }
 
-function normalizeLocalizedValue(
-  value: string | { sl: string; en: string; uk: string } | undefined
-) {
+function normalizeLocalizedValue(value: string | Partial<LocalizedText> | undefined) {
   if (!value) {
     return undefined
   }
@@ -76,7 +75,12 @@ function normalizeLocalizedValue(
     return autoTranslateText(value)
   }
 
-  return value
+  const sl = value.sl ?? ''
+  const en = value.en ?? sl
+  const uk = value.uk ?? sl
+  const bs = value.bs ?? sl
+
+  return { sl, en, uk, bs }
 }
 
 function normalizeWeeklyOffer(offer: WeeklyOffer): WeeklyOffer {
@@ -117,6 +121,7 @@ function buildWeeklyDraft(offer: WeeklyOffer) {
               sl: getLocalizedText(item?.title, 'sl'),
               en: getLocalizedText(item?.title, 'en'),
               uk: getLocalizedText(item?.title, 'uk'),
+              bs: getLocalizedText(item?.title, 'bs'),
             }
           })(),
         ])
@@ -132,11 +137,13 @@ function buildAlwaysAvailableDraft(offer: WeeklyOffer) {
       sl: getLocalizedText(item.title, 'sl'),
       en: getLocalizedText(item.title, 'en'),
       uk: getLocalizedText(item.title, 'uk'),
+      bs: getLocalizedText(item.title, 'bs'),
     },
     description: {
       sl: getLocalizedText(item.description, 'sl'),
       en: getLocalizedText(item.description, 'en'),
       uk: getLocalizedText(item.description, 'uk'),
+      bs: getLocalizedText(item.description, 'bs'),
     },
     allergens: item.allergens ?? '',
     isEditing: false,
@@ -149,6 +156,7 @@ function localizedDraftFromSlovenian(value: string) {
     sl: value,
     en: translated.en,
     uk: translated.uk,
+    bs: translated.bs,
   }
 }
 
@@ -217,6 +225,10 @@ export default function Home() {
     uk: {
       title: 'Підтвердити скасування',
       body: 'Ви справді хочете скасувати замовлення на цей день?',
+    },
+    bs: {
+      title: 'Potvrdi odjavu',
+      body: 'Da li stvarno želiš odjaviti obrok za ovaj dan?',
     },
   } satisfies Record<Language, { title: string; body: string }>
 
@@ -346,6 +358,7 @@ export default function Home() {
             sl: value,
             en: data.translation.en,
             uk: data.translation.uk,
+            bs: data.translation.bs,
           }
         : localizedDraftFromSlovenian(value)
     } catch {
@@ -1376,6 +1389,7 @@ function LanguageSwitcher({
         <option value="sl">{t.languages.sl}</option>
         <option value="en">{t.languages.en}</option>
         <option value="uk">{t.languages.uk}</option>
+        <option value="bs">{t.languages.bs}</option>
       </select>
     </label>
   )
@@ -1533,7 +1547,7 @@ function LocalizedFieldsEditor({
   onAutoTranslate?: (value: string) => void | Promise<void>
   onChange: (language: Language, value: string) => void
 }) {
-  const languages: Language[] = ['sl', 'en', 'uk']
+  const languages: Language[] = ['sl', 'en', 'uk', 'bs']
 
   return (
     <div className="space-y-3">
@@ -1572,7 +1586,7 @@ function LocalizedFieldsPreview({
   value: LocalizedText
   t: (typeof translations)[Language]
 }) {
-  const languages: Language[] = ['sl', 'en', 'uk']
+  const languages: Language[] = ['sl', 'en', 'uk', 'bs']
 
   return (
     <div className="min-h-[112px] space-y-3">

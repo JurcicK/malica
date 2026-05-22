@@ -48,34 +48,36 @@ export type OrderEntry = {
 
 export type OrdersByDay = Record<string, Record<string, OrderEntry>>
 
-const day = (sl: string, en: string, uk: string): LocalizedText => ({ sl, en, uk })
+const day = (sl: string, en: string, uk: string, bs: string): LocalizedText => ({ sl, en, uk, bs })
 const meal = (sl: string) => autoTranslateText(sl)
-const text = (sl: string, en: string, uk: string): LocalizedText => ({ sl, en, uk })
+const text = (sl: string, en: string, uk: string, bs: string): LocalizedText => ({ sl, en, uk, bs })
 
 export const demoUsers: UserProfile[] = [
   { id: 'admin', fullName: 'Kristjan Jurcic', username: 'admin', password: 'admin', role: 'admin', department: 'Administracija' },
-  { id: 'u1', fullName: 'Marko Novak', username: 'marko', password: 'malica', role: 'employee', department: 'Skladišče' },
-  { id: 'u2', fullName: 'Nina Kralj', username: 'nina', password: 'malica', role: 'employee', department: 'Prodaja' },
-  { id: 'u3', fullName: 'Tina Zupan', username: 'tina', password: 'malica', role: 'employee', department: 'Računovodstvo' },
-  { id: 'u4', fullName: 'Rok Mlakar', username: 'rok', password: 'malica', role: 'employee', department: 'Servis' },
+  { id: 'u1', fullName: 'Marko Novak', username: 'marko', password: 'malica', role: 'employee', department: 'Delavnica' },
+  { id: 'u2', fullName: 'Nina Kralj', username: 'nina', password: 'malica', role: 'employee', department: 'Pisarne' },
+  { id: 'u3', fullName: 'Tina Zupan', username: 'tina', password: 'malica', role: 'employee', department: 'Pisarne' },
+  { id: 'u4', fullName: 'Rok Mlakar', username: 'rok', password: 'malica', role: 'employee', department: 'Delavnica' },
 ]
 
 export const defaultWeeklyOffer: WeeklyOffer = {
   weekLabel: text(
     'Tedenska ponudba 30. 3. - 3. 4. 2026',
     'Weekly offer March 30 - April 3, 2026',
-    'Тижнева пропозиція 30.03 - 03.04.2026'
+    'Тижнева пропозиція 30.03 - 03.04.2026',
+    'Sedmična ponuda 30. 3. - 3. 4. 2026'
   ),
   sourceLabel: text(
     'Uvoz po Excel ponudbi 30.3-4.4.2026',
     'Imported from Excel offer 30.3-4.4.2026',
-    'Імпортовано з Excel-пропозиції 30.3-4.4.2026'
+    'Імпортовано з Excel-пропозиції 30.3-4.4.2026',
+    'Uvezeno iz Excel ponude 30.3-4.4.2026'
   ),
   cutoffHour: 10,
   days: [
     {
       date: '2026-03-30',
-      label: day('Ponedeljek', 'Monday', 'Понеділок'),
+      label: day('Ponedeljek', 'Monday', 'Понеділок', 'Ponedjeljak'),
       items: [
         { id: '2026-03-30-fit', category: 'bodi fit', title: meal('Piščančja tikka masala s kurkuminim rižem'), allergens: '2, 3' },
         { id: '2026-03-30-vege', category: 'vege', title: meal('Vege wrap z zelenjavo, krompirčkom, tzatzikijem in sladko pekočo omako'), allergens: '1, 2, 3' },
@@ -85,7 +87,7 @@ export const defaultWeeklyOffer: WeeklyOffer = {
     },
     {
       date: '2026-03-31',
-      label: day('Torek', 'Tuesday', 'Вівторок'),
+      label: day('Torek', 'Tuesday', 'Вівторок', 'Utorak'),
       items: [
         { id: '2026-03-31-fit', category: 'bodi fit', title: meal('Piščančji zrezek capresse, čičerikin humus in lečina solata po mediteransko'), allergens: '1, 2, 3' },
         { id: '2026-03-31-vege', category: 'vege', title: meal('Testenine v omaki štirih sirov'), allergens: '1, 2, 3' },
@@ -95,7 +97,7 @@ export const defaultWeeklyOffer: WeeklyOffer = {
     },
     {
       date: '2026-04-01',
-      label: day('Sreda', 'Wednesday', 'Середа'),
+      label: day('Sreda', 'Wednesday', 'Середа', 'Srijeda'),
       items: [
         { id: '2026-04-01-fit', category: 'bodi fit', title: meal('Cubisov krožnik z grško solato, piščancem, tzatzikijem in krompirčkom'), allergens: '1, 2, 3' },
         { id: '2026-04-01-vege', category: 'vege', title: meal('Yaki udon rezanci s tofujem, romaneskom, šitake gobami, bučkami in sezamom'), allergens: '1, 2, 7, 8, 9, 10, 11, 12' },
@@ -105,7 +107,7 @@ export const defaultWeeklyOffer: WeeklyOffer = {
     },
     {
       date: '2026-04-02',
-      label: day('Četrtek', 'Thursday', 'Четвер'),
+      label: day('Četrtek', 'Thursday', 'Четвер', 'Četvrtak'),
       items: [
         { id: '2026-04-02-fit', category: 'bodi fit', title: meal('Svinjski zrezek z lisičkovo omako, pečena polenta z rukolo in parmezanom'), allergens: '3' },
         { id: '2026-04-02-vege', category: 'vege', title: meal('Ocvrti sir, pomfri in domača tatarska omaka'), allergens: '1, 2, 3' },
@@ -115,7 +117,7 @@ export const defaultWeeklyOffer: WeeklyOffer = {
     },
     {
       date: '2026-04-03',
-      label: day('Petek', 'Friday', 'П’ятниця'),
+      label: day('Petek', 'Friday', 'П’ятниця', 'Petak'),
       items: [
         { id: '2026-04-03-fit', category: 'bodi fit', title: meal('Tandoori piščanec s tajsko hrustljavo solato in arašidi'), allergens: '1, 3, 8, 9, 10, 11, 12' },
         { id: '2026-04-03-vege', category: 'vege', title: meal('Zelenjavni burger s krompirčkom in sladko pekočo omako'), allergens: '1, 2, 3' },

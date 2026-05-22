@@ -50,7 +50,12 @@ function asLocalizedText(value: LocalizedText | string | null | undefined) {
     return autoTranslateText(value)
   }
 
-  return value
+  const sl = value.sl ?? ''
+  const en = value.en ?? sl
+  const uk = value.uk ?? sl
+  const bs = value.bs ?? sl
+
+  return { sl, en, uk, bs }
 }
 
 function mapDbUsers(users: DbUser[]): UserProfile[] {
@@ -82,13 +87,13 @@ function getWeekDates(startsOn: string, endsOn: string) {
 function weekdayLabel(date: string) {
   const day = new Date(`${date}T12:00:00`).getDay()
   const labels: Record<number, LocalizedText> = {
-    1: { sl: 'Ponedeljek', en: 'Monday', uk: 'Понеділок' },
-    2: { sl: 'Torek', en: 'Tuesday', uk: 'Вівторок' },
-    3: { sl: 'Sreda', en: 'Wednesday', uk: 'Середа' },
-    4: { sl: 'Četrtek', en: 'Thursday', uk: 'Четвер' },
-    5: { sl: 'Petek', en: 'Friday', uk: 'П’ятниця' },
-    6: { sl: 'Sobota', en: 'Saturday', uk: 'Субота' },
-    0: { sl: 'Nedelja', en: 'Sunday', uk: 'Неділя' },
+    1: { sl: 'Ponedeljek', en: 'Monday', uk: 'Понеділок', bs: 'Ponedjeljak' },
+    2: { sl: 'Torek', en: 'Tuesday', uk: 'Вівторок', bs: 'Utorak' },
+    3: { sl: 'Sreda', en: 'Wednesday', uk: 'Середа', bs: 'Srijeda' },
+    4: { sl: 'Četrtek', en: 'Thursday', uk: 'Четвер', bs: 'Četvrtak' },
+    5: { sl: 'Petek', en: 'Friday', uk: 'П’ятниця', bs: 'Petak' },
+    6: { sl: 'Sobota', en: 'Saturday', uk: 'Субота', bs: 'Subota' },
+    0: { sl: 'Nedelja', en: 'Sunday', uk: 'Неділя', bs: 'Nedjelja' },
   }
 
   return labels[day]
