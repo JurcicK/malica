@@ -62,6 +62,7 @@ export async function POST(request: Request) {
       let alwaysAvailableItems:
         | Array<{
             category: string
+            meal_period: string
             title: WeeklyOffer['alwaysAvailable'][number]['title']
             description: WeeklyOffer['alwaysAvailable'][number]['description'] | null
             allergens: string | null
@@ -72,7 +73,7 @@ export async function POST(request: Request) {
       if (body.copyAlwaysAvailable && currentActiveOffer?.id) {
         const { data: currentAlwaysItems, error: currentAlwaysItemsError } = await supabase
           .from('meal_items')
-          .select('category,title,description,allergens,sort_order')
+          .select('category,meal_period,title,description,allergens,sort_order')
           .eq('offer_id', currentActiveOffer.id)
           .eq('is_always_available', true)
           .order('sort_order')
@@ -84,6 +85,7 @@ export async function POST(request: Request) {
         alwaysAvailableItems =
           currentAlwaysItems?.map((item) => ({
             category: item.category,
+            meal_period: item.meal_period ?? 'morning',
             title: item.title,
             description: item.description,
             allergens: item.allergens,
@@ -116,6 +118,7 @@ export async function POST(request: Request) {
             offer_id: insertedOffer.id,
             service_date: null,
             category: item.category,
+            meal_period: item.meal_period,
             title: item.title,
             description: item.description,
             allergens: item.allergens,
@@ -212,6 +215,7 @@ export async function POST(request: Request) {
         offer_id: offerId,
         service_date: day.date,
         category: item.category,
+        meal_period: item.mealPeriod,
         title: item.title,
         description: item.description ?? null,
         allergens: item.allergens ?? null,
@@ -225,6 +229,7 @@ export async function POST(request: Request) {
       offer_id: offerId,
       service_date: null,
       category: item.category,
+      meal_period: item.mealPeriod,
       title: item.title,
       description: item.description ?? null,
       allergens: item.allergens ?? null,
@@ -265,6 +270,7 @@ export async function POST(request: Request) {
             offer_id: item.offer_id,
             service_date: item.service_date,
             category: item.category,
+            meal_period: item.meal_period,
             title: item.title,
             description: item.description,
             allergens: item.allergens,
@@ -283,6 +289,7 @@ export async function POST(request: Request) {
         offer_id: item.offer_id,
         service_date: item.service_date,
         category: item.category,
+        meal_period: item.meal_period,
         title: item.title,
         description: item.description,
         allergens: item.allergens,

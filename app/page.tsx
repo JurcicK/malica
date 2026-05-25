@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import type { Dispatch, KeyboardEvent, SetStateAction } from 'react'
 import { useEffect, useMemo, useState } from 'react'
@@ -6,6 +6,7 @@ import {
   defaultOrders,
   defaultWeeklyOffer,
   demoUsers,
+  type MealPeriod,
   type MenuCategory,
   type MenuItem,
   type OrdersByDay,
@@ -20,12 +21,31 @@ import {
 import { formatTranslation, translations, type Language } from '../lib/translations'
 
 const weeklyCategories: MenuCategory[] = ['bodi fit', 'vege', 'ali pa..', 'na hitro...']
+const mealPeriods: MealPeriod[] = ['morning', 'afternoon']
+const defaultMealPeriod: MealPeriod = 'morning'
+const mealPeriodLabels: Record<MealPeriod, { sl: string; en: string; uk: string; bs: string }> = {
+  morning: {
+    sl: 'Dopoldanska malica',
+    en: 'Morning meal',
+    uk: 'ÄÂ ÄÂ°ÄËťÄĹźÄÄľÄË›ÄÂ° Ĺâ€”ÄÂ¶ÄÂ°',
+    bs: 'Jutarnji obrok',
+  },
+  afternoon: {
+    sl: 'Popoldanska malica',
+    en: 'Afternoon meal',
+    uk: 'ÄĹşĹâ€“ĹÂÄÂ»ĹĹąÄÄľÄÂ±Ĺâ€“ÄÂ´ÄËťĹĹą Ĺâ€”ÄÂ¶ÄÂ°',
+    bs: 'Popodnevni obrok',
+  },
+}
 const emptyLocalizedText = (): LocalizedText => ({ sl: '', en: '', uk: '', bs: '' })
 
 type WeeklyDraftCell = LocalizedText
 type WeeklyDraft = Record<string, Record<MenuCategory, WeeklyDraftCell>>
+type WeeklyDraftByPeriod = Record<MealPeriod, WeeklyDraft>
+type PrintDepartment = 'Pisarne' | 'Delavnica'
 type AlwaysAvailableDraftItem = {
   id: string
+  mealPeriod: MealPeriod
   title: LocalizedText
   description: LocalizedText
   allergens: string
@@ -96,43 +116,53 @@ function normalizeWeeklyOffer(offer: WeeklyOffer): WeeklyOffer {
         defaultWeeklyOffer.days[0].label,
       items: day.items.map((item) => ({
         ...item,
+        mealPeriod: item.mealPeriod ?? defaultMealPeriod,
         title: normalizeLocalizedValue(item.title) ?? autoTranslateText('Unknown meal'),
         description: normalizeLocalizedValue(item.description),
       })),
     })),
     alwaysAvailable: offer.alwaysAvailable.map((item) => ({
       ...item,
+      mealPeriod: item.mealPeriod ?? defaultMealPeriod,
       title: normalizeLocalizedValue(item.title) ?? autoTranslateText('Unknown meal'),
       description: normalizeLocalizedValue(item.description),
     })),
   }
 }
 
-function buildWeeklyDraft(offer: WeeklyOffer) {
+function buildWeeklyDraft(offer: WeeklyOffer): WeeklyDraftByPeriod {
   return Object.fromEntries(
-    offer.days.map((day) => [
-      day.date,
+    mealPeriods.map((period) => [
+      period,
       Object.fromEntries(
-        weeklyCategories.map((category) => [
-          category,
-          (() => {
-            const item = day.items.find((entry) => entry.category === category)
-            return {
-              sl: getLocalizedText(item?.title, 'sl'),
-              en: getLocalizedText(item?.title, 'en'),
-              uk: getLocalizedText(item?.title, 'uk'),
-              bs: getLocalizedText(item?.title, 'bs'),
-            }
-          })(),
+        offer.days.map((day) => [
+          day.date,
+          Object.fromEntries(
+            weeklyCategories.map((category) => [
+              category,
+              (() => {
+                const item = day.items.find(
+                  (entry) => entry.category === category && entry.mealPeriod === period
+                )
+                return {
+                  sl: getLocalizedText(item?.title, 'sl'),
+                  en: getLocalizedText(item?.title, 'en'),
+                  uk: getLocalizedText(item?.title, 'uk'),
+                  bs: getLocalizedText(item?.title, 'bs'),
+                }
+              })(),
+            ])
+          ),
         ])
-      ),
+      ) as WeeklyDraft,
     ])
-  ) as WeeklyDraft
+  ) as WeeklyDraftByPeriod
 }
 
 function buildAlwaysAvailableDraft(offer: WeeklyOffer) {
   return offer.alwaysAvailable.map((item): AlwaysAvailableDraftItem => ({
     id: item.id,
+    mealPeriod: item.mealPeriod ?? defaultMealPeriod,
     title: {
       sl: getLocalizedText(item.title, 'sl'),
       en: getLocalizedText(item.title, 'en'),
@@ -166,6 +196,27 @@ function addDaysToIsoDate(dateString: string, days: number) {
   return next.toISOString().slice(0, 10)
 }
 
+function getMealPeriodLabel(period: MealPeriod, language: Language) {
+  return mealPeriodLabels[period][language]
+}
+
+function getPeriodOrders(orders: OrdersByDay, date: string, period: MealPeriod) {
+  return Object.entries(orders[date] ?? {})
+    .map(([userId, userOrders]) => ({ userId, order: userOrders[period] }))
+    .filter((entry): entry is { userId: string; order: NonNullable<typeof entry.order> } =>
+      Boolean(entry.order)
+    )
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;')
+}
+
 export default function Home() {
   const [isReady, setIsReady] = useState(false)
   const [language, setLanguage] = useState<Language>('sl')
@@ -177,19 +228,21 @@ export default function Home() {
   const [orders, setOrders] = useState<OrdersByDay>(defaultOrders)
   const [weeklyOffer, setWeeklyOffer] = useState<WeeklyOffer>(defaultWeeklyOffer)
   const [selectedDay, setSelectedDay] = useState(defaultWeeklyOffer.days[0].date)
+  const [selectedMealPeriod, setSelectedMealPeriod] = useState<MealPeriod | null>(null)
   const [now, setNow] = useState(new Date())
   const [pendingMeal, setPendingMeal] = useState<MenuItem | null>(null)
   const [pendingMealNote, setPendingMealNote] = useState('')
-  const [pendingOrderRemoval, setPendingOrderRemoval] = useState<string | null>(null)
+  const [pendingOrderRemoval, setPendingOrderRemoval] = useState<{ date: string; period: MealPeriod } | null>(null)
   const [newWeekStart, setNewWeekStart] = useState(addDaysToIsoDate(new Date().toISOString().slice(0, 10), 7))
   const [newWeekSource, setNewWeekSource] = useState('')
   const [copyAlwaysAvailableToNewWeek, setCopyAlwaysAvailableToNewWeek] = useState(true)
-  const [weeklyDraft, setWeeklyDraft] = useState<WeeklyDraft>(() => buildWeeklyDraft(defaultWeeklyOffer))
+  const [weeklyDraft, setWeeklyDraft] = useState<WeeklyDraftByPeriod>(() => buildWeeklyDraft(defaultWeeklyOffer))
   const [alwaysAvailableDraft, setAlwaysAvailableDraft] = useState<AlwaysAvailableDraftItem[]>(() =>
     buildAlwaysAvailableDraft(defaultWeeklyOffer)
   )
   const [editingCells, setEditingCells] = useState<Record<string, boolean>>({})
   const [isSavingOffer, setIsSavingOffer] = useState(false)
+  const [printDepartment, setPrintDepartment] = useState<PrintDepartment>('Pisarne')
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -200,6 +253,10 @@ export default function Home() {
       setSelectedDay(getInitialSelectedDay(normalizedOffer))
       setWeeklyDraft(buildWeeklyDraft(normalizedOffer))
       setAlwaysAvailableDraft(buildAlwaysAvailableDraft(normalizedOffer))
+      const savedMealPeriod = window.localStorage.getItem('malica:selectedMealPeriod')
+      if (savedMealPeriod === 'morning' || savedMealPeriod === 'afternoon') {
+        setSelectedMealPeriod(savedMealPeriod)
+      }
       setIsReady(true)
     }, 0)
 
@@ -210,6 +267,12 @@ export default function Home() {
     const timer = window.setInterval(() => setNow(new Date()), 30000)
     return () => window.clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    if (selectedMealPeriod) {
+      window.localStorage.setItem('malica:selectedMealPeriod', selectedMealPeriod)
+    }
+  }, [selectedMealPeriod])
 
   const t = translations[language]
   type AdminOrderPerson = { user: UserProfile; note: string | undefined }
@@ -223,12 +286,12 @@ export default function Home() {
       body: 'Do you really want to cancel your meal for this day?',
     },
     uk: {
-      title: 'Підтвердити скасування',
-      body: 'Ви справді хочете скасувати замовлення на цей день?',
+      title: 'ĐźŃ–Đ´Ń‚Đ˛ĐµŃ€Đ´Đ¸Ń‚Đ¸ ŃĐşĐ°ŃŃĐ˛Đ°Đ˝Đ˝ŃŹ',
+      body: 'Đ’Đ¸ ŃĐżŃ€Đ°Đ˛Đ´Ń– Ń…ĐľŃ‡ĐµŃ‚Đµ ŃĐşĐ°ŃŃĐ˛Đ°Ń‚Đ¸ Đ·Đ°ĐĽĐľĐ˛Đ»ĐµĐ˝Đ˝ŃŹ Đ˝Đ° Ń†ĐµĐą Đ´ĐµĐ˝ŃŚ?',
     },
     bs: {
       title: 'Potvrdi odjavu',
-      body: 'Da li stvarno želiš odjaviti obrok za ovaj dan?',
+      body: 'Da li stvarno ĹľeliĹˇ odjaviti obrok za ovaj dan?',
     },
   } satisfies Record<Language, { title: string; body: string }>
 
@@ -247,13 +310,17 @@ export default function Home() {
     () => visibleOfferDays.find((day) => day.date === activeSelectedDay) ?? visibleOfferDays[0] ?? weeklyOffer.days[0],
     [activeSelectedDay, visibleOfferDays, weeklyOffer.days]
   )
+  const activeMealPeriod = selectedMealPeriod ?? defaultMealPeriod
 
   const mergedItems = useMemo(
-    () => [...selectedOfferDay.items, ...weeklyOffer.alwaysAvailable],
-    [selectedOfferDay, weeklyOffer.alwaysAvailable]
+    () => [
+      ...selectedOfferDay.items.filter((item) => item.mealPeriod === activeMealPeriod),
+      ...weeklyOffer.alwaysAvailable.filter((item) => item.mealPeriod === activeMealPeriod),
+    ],
+    [activeMealPeriod, selectedOfferDay, weeklyOffer.alwaysAvailable]
   )
 
-  const selectedOrder = loggedInUser ? orders[activeSelectedDay]?.[loggedInUser.id] : undefined
+  const selectedOrder = loggedInUser ? orders[activeSelectedDay]?.[loggedInUser.id]?.[activeMealPeriod] : undefined
   const selectedOrderId = selectedOrder?.mealItemId
   const isSelectedDayLocked = isLocked(selectedOfferDay.date, weeklyOffer.cutoffHour, now)
   const normalizeDepartment = (department: string) => {
@@ -272,9 +339,9 @@ export default function Home() {
 
   const adminBreakdown = mergedItems
     .map((item) => {
-      const people = Object.entries(orders[selectedOfferDay.date] ?? {})
-        .filter(([, order]) => order.mealItemId === item.id)
-        .map(([userId, order]) => {
+      const people = getPeriodOrders(orders, selectedOfferDay.date, activeMealPeriod)
+        .filter(({ order }) => order.mealItemId === item.id)
+        .map(({ userId, order }) => {
           const user = users.find((candidate) => candidate.id === userId)
           return user ? { user, note: order.note } : null
         })
@@ -328,6 +395,181 @@ export default function Home() {
     department,
     total: meals.reduce((sum, meal) => sum + meal.people.length, 0),
   }))
+  const printOrdersCard = (department: PrintDepartment) => {
+    setPrintDepartment(department)
+    const departmentMeals = adminByDepartment.find(([name]) => name === department)?.[1] ?? []
+    const total = departmentMeals.reduce((sum, meal) => sum + meal.people.length, 0)
+    const title = `${t.whoOrdered} - ${getLocalizedText(selectedOfferDay.label, language)} - ${getMealPeriodLabel(activeMealPeriod, language)}`
+    const dateLabel = formatDate(selectedOfferDay.date, language)
+    const mealRows = departmentMeals.length
+      ? departmentMeals
+          .map(
+            ({ item, people }) => `
+              <section class="meal">
+                <div class="meal-head">
+                  <div>
+                    <p class="category">${escapeHtml(t.categoryLabels[item.category])}</p>
+                    <h2>${escapeHtml(getLocalizedText(item.title, language))}</h2>
+                  </div>
+                  <strong>${people.length}</strong>
+                </div>
+                <div class="people">
+                  ${people
+                    .map(({ user, note }) =>
+                      `<span>${escapeHtml(user.fullName)}${note ? ` (${escapeHtml(note)})` : ''}</span>`
+                    )
+                    .join('')}
+                </div>
+              </section>
+            `
+          )
+          .join('')
+      : '<p class="empty">Za izbran oddelek ni naročil.</p>'
+
+    const printWindow = window.open('', '_blank', 'width=900,height=700')
+
+    if (!printWindow) {
+      window.print()
+      return
+    }
+
+    printWindow.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <title>${escapeHtml(title)}</title>
+          <style>
+            @page { margin: 14mm; }
+            * { box-sizing: border-box; }
+            body {
+              margin: 0;
+              color: #1d1d1b;
+              font-family: Arial, sans-serif;
+              background: white;
+            }
+            .card {
+              width: 100%;
+              border: 1px solid #ddd3c4;
+              border-radius: 14px;
+              padding: 22px;
+            }
+            .eyebrow {
+              margin: 0 0 6px;
+              color: #b45309;
+              font-size: 11px;
+              font-weight: 700;
+              letter-spacing: .16em;
+              text-transform: uppercase;
+            }
+            h1 {
+              margin: 0;
+              font-size: 26px;
+              line-height: 1.2;
+            }
+            .meta {
+              display: grid;
+              grid-template-columns: repeat(3, minmax(0, 1fr));
+              gap: 10px;
+              margin: 18px 0;
+            }
+            .meta div {
+              border: 1px solid #eadfce;
+              border-radius: 10px;
+              padding: 10px 12px;
+              background: #fffaf1;
+            }
+            .meta p {
+              margin: 0 0 4px;
+              color: #675d4f;
+              font-size: 12px;
+              font-weight: 700;
+            }
+            .meta strong {
+              font-size: 18px;
+            }
+            .meal {
+              break-inside: avoid;
+              border: 1px solid #eadfce;
+              border-radius: 12px;
+              padding: 14px;
+              margin-top: 12px;
+            }
+            .meal-head {
+              display: flex;
+              justify-content: space-between;
+              gap: 16px;
+            }
+            .category {
+              margin: 0;
+              color: #b45309;
+              font-size: 11px;
+              font-weight: 700;
+              letter-spacing: .14em;
+              text-transform: uppercase;
+            }
+            h2 {
+              margin: 5px 0 0;
+              font-size: 18px;
+            }
+            .meal-head strong {
+              border: 1px solid #eadfce;
+              border-radius: 999px;
+              min-width: 38px;
+              height: 30px;
+              display: inline-flex;
+              align-items: center;
+              justify-content: center;
+              background: #fff0df;
+              color: #9a3412;
+            }
+            .people {
+              display: flex;
+              flex-wrap: wrap;
+              gap: 8px;
+              margin-top: 12px;
+            }
+            .people span {
+              border: 1px solid #eadfce;
+              border-radius: 999px;
+              padding: 6px 10px;
+            }
+            .empty {
+              margin: 18px 0 0;
+              color: #675d4f;
+            }
+          </style>
+        </head>
+        <body>
+          <main class="card">
+            <p class="eyebrow">Admin pregled</p>
+            <h1>${escapeHtml(title)}</h1>
+            <section class="meta">
+              <div>
+                <p>Datum</p>
+                <strong>${escapeHtml(dateLabel)}</strong>
+              </div>
+              <div>
+                <p>Oddelek</p>
+                <strong>${escapeHtml(department)}</strong>
+              </div>
+              <div>
+                <p>Skupaj</p>
+                <strong>${total}</strong>
+              </div>
+            </section>
+            ${mealRows}
+          </main>
+          <script>
+            window.addEventListener('load', () => {
+              window.print();
+              window.setTimeout(() => window.close(), 250);
+            });
+          </script>
+        </body>
+      </html>
+    `)
+    printWindow.document.close()
+  }
 
   const translateLocalizedText = async (value: string) => {
     if (!value.trim()) {
@@ -366,15 +608,23 @@ export default function Home() {
     }
   }
 
-  const autoTranslateWeeklyCell = async (date: string, category: MenuCategory, value: string) => {
+  const autoTranslateWeeklyCell = async (
+    period: MealPeriod,
+    date: string,
+    category: MenuCategory,
+    value: string
+  ) => {
     const translation = await translateLocalizedText(value)
 
     setWeeklyDraft((current) => ({
       ...current,
-      [date]: {
-        ...(current[date] ?? {}),
-        [category]: translation,
-      } as Record<MenuCategory, WeeklyDraftCell>,
+      [period]: {
+        ...current[period],
+        [date]: {
+          ...(current[period]?.[date] ?? {}),
+          [category]: translation,
+        } as Record<MenuCategory, WeeklyDraftCell>,
+      },
     }))
   }
 
@@ -452,7 +702,7 @@ export default function Home() {
   }
 
   const placeOrder = async (itemId: string) => {
-    if (!loggedInUser || loggedInUser.role !== 'employee') return
+    if (!loggedInUser || loggedInUser.role !== 'employee' || !selectedMealPeriod) return
 
     if (isSelectedDayLocked) {
       setMessage(
@@ -474,16 +724,17 @@ export default function Home() {
           serviceDate: selectedOfferDay.date,
           userId: loggedInUser.id,
           mealItemId: itemId,
+          mealPeriod: selectedMealPeriod,
           note: pendingMeal?.isAlwaysAvailable ? pendingMealNote : '',
         }),
       })
 
       if (!response.ok) {
-        setMessage('Shranjevanje naročila v bazo ni uspelo.')
+        setMessage('Shranjevanje naroÄŤila v bazo ni uspelo.')
         return
       }
     } catch {
-      setMessage('Shranjevanje naročila v bazo ni uspelo.')
+      setMessage('Shranjevanje naroÄŤila v bazo ni uspelo.')
       return
     }
 
@@ -492,22 +743,25 @@ export default function Home() {
       [selectedOfferDay.date]: {
         ...(current[selectedOfferDay.date] ?? {}),
         [loggedInUser.id]: {
-          mealItemId: itemId,
-          note: pendingMeal?.isAlwaysAvailable ? pendingMealNote.trim() || undefined : undefined,
+          ...(current[selectedOfferDay.date]?.[loggedInUser.id] ?? {}),
+          [selectedMealPeriod]: {
+            mealItemId: itemId,
+            note: pendingMeal?.isAlwaysAvailable ? pendingMealNote.trim() || undefined : undefined,
+          },
         },
       },
     }))
 
     setMessage(
       formatTranslation(t.orderSaved, {
-        day: getLocalizedText(selectedOfferDay.label, language).toLowerCase(),
+        day: `${getLocalizedText(selectedOfferDay.label, language).toLowerCase()} (${getMealPeriodLabel(selectedMealPeriod, language)})`,
       })
     )
     setPendingMeal(null)
     setPendingMealNote('')
   }
 
-  const removeOrder = async (dayDate: string) => {
+  const removeOrder = async (dayDate: string, mealPeriod: MealPeriod) => {
     if (!loggedInUser || loggedInUser.role !== 'employee') return
 
     const day = weeklyOffer.days.find((entry) => entry.date === dayDate)
@@ -535,6 +789,7 @@ export default function Home() {
         body: JSON.stringify({
           serviceDate: dayDate,
           userId: loggedInUser.id,
+          mealPeriod,
         }),
       })
 
@@ -550,11 +805,20 @@ export default function Home() {
     setOrders((current) => ({
       ...current,
       [dayDate]: Object.fromEntries(
-          Object.entries(current[dayDate] ?? {}).filter(([userId]) => userId !== loggedInUser.id)
+        Object.entries(current[dayDate] ?? {}).map(([userId, userOrders]) => [
+          userId,
+          userId === loggedInUser.id
+            ? Object.fromEntries(
+                Object.entries(userOrders).filter(([period]) => period !== mealPeriod)
+              )
+            : userOrders,
+        ])
       ),
     }))
 
-    setMessage(`${t.remove}: ${getLocalizedText(day.label, language).toLowerCase()}`)
+    setMessage(
+      `${t.remove}: ${getLocalizedText(day.label, language).toLowerCase()} (${getMealPeriodLabel(mealPeriod, language)})`
+    )
   }
 
   const createNewWeek = async () => {
@@ -603,7 +867,7 @@ export default function Home() {
   }
 
   const saveWeeklyOffer = async () => {
-    const hasAnyMeal = Object.values(weeklyDraft).some((dayDraft) =>
+    const hasAnyMeal = Object.values(weeklyDraft[activeMealPeriod]).some((dayDraft) =>
       weeklyCategories.some((category) => dayDraft[category]?.sl?.trim())
     )
 
@@ -616,10 +880,13 @@ export default function Home() {
 
     const nextDays = await Promise.all(
       weeklyOffer.days.map(async (day) => {
+        const otherPeriodItems = day.items.filter((item) => item.mealPeriod !== activeMealPeriod)
         const nextItems = await Promise.all(
           weeklyCategories.map(async (category) => {
-            const title = weeklyDraft[day.date]?.[category]
-            const existingItem = day.items.find((item) => item.category === category)
+            const title = weeklyDraft[activeMealPeriod][day.date]?.[category]
+            const existingItem = day.items.find(
+              (item) => item.category === category && item.mealPeriod === activeMealPeriod
+            )
 
             if (!title?.sl?.trim()) {
               return null
@@ -628,6 +895,7 @@ export default function Home() {
             return {
               id: existingItem?.id ?? `${day.date}-${category}`,
               category,
+              mealPeriod: activeMealPeriod,
               title,
               allergens: existingItem?.allergens,
               description: existingItem?.description,
@@ -637,7 +905,10 @@ export default function Home() {
 
         return {
           ...day,
-          items: nextItems.filter((item): item is NonNullable<typeof item> => item !== null),
+          items: [
+            ...otherPeriodItems,
+            ...nextItems.filter((item): item is NonNullable<typeof item> => item !== null),
+          ],
         }
       })
     )
@@ -652,7 +923,9 @@ export default function Home() {
   }
 
   const saveAlwaysAvailable = async () => {
-    const nonEmptyItems = alwaysAvailableDraft.filter((item) => item.title.sl.trim())
+    const nonEmptyItems = alwaysAvailableDraft.filter(
+      (item) => item.mealPeriod === activeMealPeriod && item.title.sl.trim()
+    )
 
     if (nonEmptyItems.length === 0) {
       setMessage(t.enterMealTitle)
@@ -667,6 +940,7 @@ export default function Home() {
       return {
         id: existingItem?.id ?? item.id,
         category: 'stalna ponudba' as const,
+        mealPeriod: activeMealPeriod,
         title: item.title,
         description: item.description.sl.trim() ? item.description : undefined,
         allergens: item.allergens.trim() || undefined,
@@ -676,7 +950,10 @@ export default function Home() {
 
     const nextOffer = {
       ...weeklyOffer,
-      alwaysAvailable,
+      alwaysAvailable: [
+        ...weeklyOffer.alwaysAvailable.filter((item) => item.mealPeriod !== activeMealPeriod),
+        ...alwaysAvailable,
+      ],
     }
 
     await saveOfferToSupabase(nextOffer)
@@ -737,7 +1014,12 @@ export default function Home() {
         Object.entries(current).map(([dateKey, dailyOrders]) => [
           dateKey,
           Object.fromEntries(
-            Object.entries(dailyOrders).filter(([, order]) => order.mealItemId !== itemId)
+            Object.entries(dailyOrders).map(([userId, userOrders]) => [
+              userId,
+              Object.fromEntries(
+                Object.entries(userOrders).filter(([, order]) => order?.mealItemId !== itemId)
+              ),
+            ])
           ),
         ])
       )
@@ -746,17 +1028,22 @@ export default function Home() {
     if (date) {
       setWeeklyDraft((current) => {
         const nextDraft = { ...current }
-        const dayDraft = { ...(nextDraft[date] ?? {}) }
+        const dayDraft = { ...(nextDraft[activeMealPeriod]?.[date] ?? {}) }
         for (const category of weeklyCategories) {
           const matchingItem = weeklyOffer.days
             .find((day) => day.date === date)
-            ?.items.find((item) => item.id === itemId && item.category === category)
+            ?.items.find(
+              (item) =>
+                item.id === itemId &&
+                item.category === category &&
+                item.mealPeriod === activeMealPeriod
+            )
 
           if (matchingItem) {
             dayDraft[category] = emptyLocalizedText()
           }
         }
-        nextDraft[date] = dayDraft as Record<MenuCategory, WeeklyDraftCell>
+        nextDraft[activeMealPeriod][date] = dayDraft as Record<MenuCategory, WeeklyDraftCell>
         return nextDraft
       })
     }
@@ -767,6 +1054,7 @@ export default function Home() {
       ...current,
       {
         id: `always-draft-${Date.now()}`,
+        mealPeriod: activeMealPeriod,
         title: emptyLocalizedText(),
         description: emptyLocalizedText(),
         allergens: '',
@@ -908,7 +1196,7 @@ export default function Home() {
                 <p className="font-semibold">{loggedInUser.department}</p>
                 <p className="text-[var(--muted)]">
                   {now.toLocaleDateString(language === 'uk' ? 'uk-UA' : language === 'en' ? 'en-US' : 'sl-SI')} {' '}
-                  {language === 'sl' ? 'ob' : language === 'uk' ? 'о' : 'at'}{' '}
+                  {language === 'sl' ? 'ob' : language === 'uk' ? 'Đľ' : 'at'}{' '}
                   {now.toLocaleTimeString('sl-SI', { hour: '2-digit', minute: '2-digit' })}
                 </p>
               </div>
@@ -919,19 +1207,56 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-[0.42fr_0.58fr]">
-          <aside className="glass-panel rounded-[2rem] p-5 sm:p-6">
+        <section className={`grid gap-6 ${loggedInUser.role === 'admin' ? '' : 'lg:grid-cols-[0.42fr_0.58fr]'}`}>
+          {!selectedMealPeriod && loggedInUser.role === 'employee' ? (
+            <section className="glass-panel rounded-[2rem] p-5 sm:p-6 lg:col-span-2">
+              <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
+                Termin naročanja
+              </p>
+              <h2 className="mt-2 font-[var(--font-display)] text-3xl font-bold">
+                Najprej izberi termin malice
+              </h2>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+                Dnevi in ponudba se prikaĹľejo po izbiri termina. Izbira ostane shranjena, zato lahko potem naroÄŤiĹˇ cel teden brez vraÄŤanja na ta korak.
+              </p>
+              <div className="mt-6 max-w-md">
+                <label className="block">
+                  <span className="mb-2 block text-sm font-medium text-[var(--muted)]">
+                    Termin malice
+                  </span>
+                  <select
+                    value=""
+                    onChange={(event) => setSelectedMealPeriod(event.target.value as MealPeriod)}
+                    className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-base font-semibold outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                  >
+                    <option value="" disabled>
+                      Izberi dopoldansko ali popoldansko malico
+                    </option>
+                    {mealPeriods.map((period) => (
+                      <option key={period} value={period}>
+                        {getMealPeriodLabel(period, language)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </section>
+          ) : (
+          <>
+          <aside className="glass-panel self-start rounded-[2rem] p-5 sm:p-6">
             <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
               {t.days}
             </p>
-            <div className="mt-4 space-y-3">
+            <div className={`mt-4 ${loggedInUser.role === 'admin' ? 'grid gap-3 sm:grid-cols-2 lg:grid-cols-5' : 'space-y-3'}`}>
               {visibleOfferDays.map((day) => {
                 const locked = isLocked(day.date, weeklyOffer.cutoffHour, now)
-                const dayOrders = Object.keys(orders[day.date] ?? {}).length
-                const userOrder = loggedInUser ? orders[day.date]?.[loggedInUser.id] : undefined
+                const dayOrders = getPeriodOrders(orders, day.date, activeMealPeriod).length
+                const userOrder = loggedInUser ? orders[day.date]?.[loggedInUser.id]?.[activeMealPeriod] : undefined
                 const userOrderId = userOrder?.mealItemId
                 const chosenItem = userOrderId
-                  ? [...day.items, ...weeklyOffer.alwaysAvailable].find((item) => item.id === userOrderId)
+                  ? [...day.items, ...weeklyOffer.alwaysAvailable].find(
+                      (item) => item.id === userOrderId && item.mealPeriod === activeMealPeriod
+                    )
                   : undefined
                 const needsAttention = loggedInUser.role === 'employee' && !chosenItem
                 const dayCardClass = `w-full rounded-[1.5rem] border px-4 py-4 text-left transition ${
@@ -977,7 +1302,7 @@ export default function Home() {
                             type="button"
                             onClick={(event) => {
                               event.stopPropagation()
-                              setPendingOrderRemoval(day.date)
+                              setPendingOrderRemoval({ date: day.date, period: activeMealPeriod })
                             }}
                             className="shrink-0 rounded-xl border border-emerald-200 bg-white/90 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-800 transition hover:bg-white"
                           >
@@ -1002,6 +1327,27 @@ export default function Home() {
                   <h2 className="mt-2 font-[var(--font-display)] text-3xl font-bold">
                     {formatDate(selectedOfferDay.date, language)}
                   </h2>
+                  <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+                    <label className="block w-full sm:max-w-xs">
+                      <span className="mb-2 block text-sm font-medium text-[var(--muted)]">
+                        {loggedInUser.role === 'admin' ? 'Termin ponudbe' : 'Termin naročanja'}
+                      </span>
+                      <select
+                        value={activeMealPeriod}
+                        onChange={(event) => setSelectedMealPeriod(event.target.value as MealPeriod)}
+                        className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                      >
+                        {mealPeriods.map((period) => (
+                          <option key={period} value={period}>
+                            {getMealPeriodLabel(period, language)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm font-semibold text-orange-900">
+                      {loggedInUser.role === 'admin' ? 'Pregleduješ' : 'Naročaš'}: {getMealPeriodLabel(activeMealPeriod, language)}
+                    </div>
+                  </div>
                 </div>
                 <div className="rounded-2xl border border-[var(--line)] bg-white/70 px-4 py-3 text-sm">
                   <p className="font-semibold">
@@ -1016,7 +1362,9 @@ export default function Home() {
               <div className="mt-6 grid gap-4">
                 {mergedItems.map((item) => {
                   const selected = selectedOrderId === item.id
-                  const count = Object.values(orders[activeSelectedDay] ?? {}).filter((order) => order.mealItemId === item.id).length
+                  const count = getPeriodOrders(orders, activeSelectedDay, activeMealPeriod).filter(
+                    ({ order }) => order.mealItemId === item.id
+                  ).length
 
                   return (
                     <article key={item.id} className={`rounded-[1.6rem] border p-5 transition ${selected ? 'border-orange-300 bg-orange-50' : 'border-[var(--line)] bg-white/75'}`}>
@@ -1052,7 +1400,7 @@ export default function Home() {
                               disabled={isSelectedDayLocked}
                               className="relative z-10 rounded-2xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[var(--accent-strong)] active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-stone-300"
                             >
-                              {selected ? t.selected : t.chooseMealButton}
+                              {selected ? t.selected : `${t.chooseMealButton} (${getMealPeriodLabel(activeMealPeriod, language)})`}
                             </button>
                           ) : (
                             <button
@@ -1071,32 +1419,69 @@ export default function Home() {
             </section>
 
             {loggedInUser.role === 'admin' ? (
-              <section className="grid gap-6 xl:grid-cols-[0.55fr_0.45fr]">
-                <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
-                  <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
-                    {t.adminOverview}
-                  </p>
-                  <h3 className="mt-2 font-[var(--font-display)] text-2xl font-bold">{t.whoOrdered}</h3>
+              <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+                <div className="printable-order-card glass-panel rounded-[1.5rem] p-4 sm:p-5 xl:col-span-2">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
+                        {t.adminOverview}
+                      </p>
+                      <h3 className="mt-1 font-[var(--font-display)] text-2xl font-bold">
+                        {t.whoOrdered} - {getLocalizedText(selectedOfferDay.label, language)} - {getMealPeriodLabel(activeMealPeriod, language)}
+                      </h3>
+                      <p className="mt-2 text-sm text-[var(--muted)]">
+                        {formatDate(selectedOfferDay.date, language)}
+                      </p>
+                    </div>
+                    <div className="print-hide flex flex-col gap-2 sm:flex-row lg:items-center">
+                      {(['Pisarne', 'Delavnica'] as PrintDepartment[]).map((department) => (
+                        <button
+                          key={department}
+                          type="button"
+                          onClick={() => setPrintDepartment(department)}
+                          className={`rounded-2xl border px-4 py-2.5 text-sm font-semibold transition ${
+                            printDepartment === department
+                              ? 'border-orange-300 bg-orange-50 text-orange-900'
+                              : 'border-[var(--line)] bg-white text-[var(--foreground)] hover:bg-orange-50'
+                          }`}
+                        >
+                          {department}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => printOrdersCard(printDepartment)}
+                        className="rounded-2xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[var(--accent-strong)]"
+                      >
+                        Tiskaj
+                      </button>
+                    </div>
+                  </div>
                   {adminDepartmentSummary.length > 0 ? (
-                    <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                    <div className="print-hide mt-4 grid gap-3 sm:grid-cols-3">
                       {adminDepartmentSummary.map(({ department, total }) => (
-                        <div key={department} className="rounded-[1.2rem] border border-[var(--line)] bg-white p-4">
+                        <div key={department} className="rounded-[1rem] border border-[var(--line)] bg-white px-4 py-3">
                           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
                             {department}
                           </p>
-                          <p className="mt-2 font-[var(--font-display)] text-2xl font-semibold">{total}</p>
+                          <p className="mt-1 font-[var(--font-display)] text-2xl font-semibold">{total}</p>
                         </div>
                       ))}
                     </div>
                   ) : null}
-                  <div className="mt-5 space-y-4">
+                  <div className="mt-4 max-h-[520px] space-y-3 overflow-y-auto pr-1 print:max-h-none print:overflow-visible print:pr-0">
                     {adminByDepartment.length === 0 ? (
-                      <div className="rounded-[1.5rem] border border-[var(--line)] bg-white/70 p-4 text-sm text-[var(--muted)]">
+                      <div className="rounded-[1rem] border border-[var(--line)] bg-white/70 p-4 text-sm text-[var(--muted)]">
                         {t.noOrders}
                       </div>
                     ) : (
                       adminByDepartment.map(([department, meals]) => (
-                        <div key={department} className="rounded-[1.5rem] border border-[var(--line)] bg-white/75 p-4">
+                        <div
+                          key={department}
+                          className={`rounded-[1.1rem] border border-[var(--line)] bg-white/75 p-4 ${
+                            department === printDepartment ? '' : 'print-department-hidden'
+                          }`}
+                        >
                           <div className="flex items-center justify-between gap-4">
                             <p className="font-[var(--font-display)] text-xl font-semibold">{department}</p>
                             <span className="rounded-full bg-orange-100 px-3 py-1 text-sm font-semibold text-orange-800">
@@ -1105,7 +1490,7 @@ export default function Home() {
                           </div>
                           <div className="mt-4 space-y-4">
                             {meals.map(({ item, people }) => (
-                              <div key={`${department}-${item.id}`} className="rounded-[1.2rem] border border-[var(--line)] bg-white p-4">
+                              <div key={`${department}-${item.id}`} className="rounded-[1rem] border border-[var(--line)] bg-white p-4">
                                 <div className="flex items-start justify-between gap-4">
                                   <div>
                                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
@@ -1136,15 +1521,15 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
+                <div className="glass-panel rounded-[1.5rem] p-4 sm:p-5">
                   <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
                     Novi teden
                   </p>
-                  <h3 className="mt-2 font-[var(--font-display)] text-2xl font-bold">Priprava naslednjega tedna</h3>
-                  <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+                  <h3 className="mt-1 font-[var(--font-display)] text-2xl font-bold">Priprava naslednjega tedna</h3>
+                  <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
                     Ustvari nov aktiven teden. Prejsnji ostane shranjen v arhivu, uporabniki pa bodo videli samo novega.
                   </p>
-                  <div className="mt-5 grid gap-4">
+                  <div className="mt-4 grid gap-3">
                     <label className="block">
                       <span className="mb-2 block text-sm font-medium text-[var(--muted)]">Zacetek tedna</span>
                       <input
@@ -1182,12 +1567,14 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
+                <div className="glass-panel rounded-[1.5rem] p-4 sm:p-5 xl:col-span-2">
                   <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
                     {t.manualEntry}
                   </p>
-                  <h3 className="mt-2 font-[var(--font-display)] text-2xl font-bold">{t.addMeal}</h3>
-                  <p className="mt-3 text-sm leading-6 text-[var(--muted)]">{t.addMealHint}</p>
+                  <h3 className="mt-1 font-[var(--font-display)] text-2xl font-bold">
+                    {t.addMeal} - {getMealPeriodLabel(activeMealPeriod, language)}
+                  </h3>
+                  <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{t.addMealHint}</p>
                   <div className="mt-6 overflow-x-auto">
                     <div className="min-w-[860px]">
                       <div className="grid grid-cols-[160px_repeat(5,minmax(0,1fr))] gap-3">
@@ -1209,7 +1596,8 @@ export default function Home() {
                             categoryLabel={t.categoryLabels[category]}
                             category={category}
                             days={weeklyOffer.days}
-                            draft={weeklyDraft}
+                            period={activeMealPeriod}
+                            draft={weeklyDraft[activeMealPeriod]}
                             editingCells={editingCells}
                             setEditingCells={setEditingCells}
                             setWeeklyDraft={setWeeklyDraft}
@@ -1232,21 +1620,63 @@ export default function Home() {
                 </div>
               </section>
             ) : null}
+          </div>
+          </>
+          )}
+        </section>
+
+        {selectedMealPeriod || loggedInUser.role === 'admin' ? (
+          <div className="space-y-6">
+            {loggedInUser.role === 'admin' ? (
+              <section className="glass-panel rounded-[1.5rem] p-4 sm:p-5">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
+                      Termin ponudbe
+                    </p>
+                    <h3 className="mt-1 font-[var(--font-display)] text-2xl font-bold">
+                      Urejaš: {getMealPeriodLabel(activeMealPeriod, language)}
+                    </h3>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+                      Tedenska ponudba, stalna ponudba in admin pregled so vezani na izbran termin.
+                    </p>
+                  </div>
+                  <label className="block w-full sm:max-w-xs">
+                    <span className="mb-2 block text-sm font-medium text-[var(--muted)]">
+                      Izberi termin za urejanje
+                    </span>
+                    <select
+                      value={activeMealPeriod}
+                      onChange={(event) => setSelectedMealPeriod(event.target.value as MealPeriod)}
+                      className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                    >
+                      {mealPeriods.map((period) => (
+                        <option key={period} value={period}>
+                          {getMealPeriodLabel(period, language)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </section>
+            ) : null}
 
             {loggedInUser.role === 'admin' ? (
-              <section className="glass-panel rounded-[2rem] p-5 sm:p-6">
+              <section className="glass-panel rounded-[1.5rem] p-4 sm:p-5">
                 <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
                   {t.categoryLabels['stalna ponudba']}
                 </p>
-                <h3 className="mt-2 font-[var(--font-display)] text-2xl font-bold">
-                  {t.manualEntry}
+                <h3 className="mt-1 font-[var(--font-display)] text-2xl font-bold">
+                  {t.manualEntry} - {getMealPeriodLabel(activeMealPeriod, language)}
                 </h3>
-                <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-                  Ločeno upravljanje stalne ponudbe. Te jedi so vedno prikazane uporabnikom.
+                <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+                  Ločeno upravljanje stalne ponudbe za izbran termin. Te jedi so vedno prikazane uporabnikom znotraj tega termina.
                 </p>
-                <div className="mt-6 space-y-3">
-                  {alwaysAvailableDraft.map((item) => (
-                    <div key={item.id} className="rounded-[1.4rem] border border-[var(--line)] bg-white/75 p-4">
+                <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {alwaysAvailableDraft
+                    .filter((item) => item.mealPeriod === activeMealPeriod)
+                    .map((item) => (
+                    <div key={item.id} className="rounded-[1.1rem] border border-[var(--line)] bg-white/75 p-4">
                       {item.isEditing ? (
                         <div className="space-y-4">
                           <LocalizedFieldsEditor
@@ -1331,7 +1761,7 @@ export default function Home() {
               </section>
             ) : null}
           </div>
-        </section>
+        ) : null}
 
         {message ? <MessageBox message={message} className="glass-panel rounded-[1.5rem]" /> : null}
         {pendingMeal ? (
@@ -1339,7 +1769,7 @@ export default function Home() {
             title={t.chooseMealTitle}
             body={`${t.chooseMealText} ${getLocalizedText(pendingMeal.title, language)}`}
             noteLabel={pendingMeal.isAlwaysAvailable ? 'Opomba' : undefined}
-            notePlaceholder={pendingMeal.isAlwaysAvailable ? 'npr. brez paradižnika' : undefined}
+            notePlaceholder={pendingMeal.isAlwaysAvailable ? 'npr. brez paradiĹľnika' : undefined}
             noteValue={pendingMealNote}
             onNoteChange={setPendingMealNote}
             cancelLabel={t.cancel}
@@ -1359,7 +1789,7 @@ export default function Home() {
             confirmLabel={t.confirm}
             onCancel={() => setPendingOrderRemoval(null)}
             onConfirm={() => {
-              void removeOrder(pendingOrderRemoval)
+              void removeOrder(pendingOrderRemoval.date, pendingOrderRemoval.period)
               setPendingOrderRemoval(null)
             }}
           />
@@ -1435,6 +1865,7 @@ function Field({
 function GridRow({
   categoryLabel,
   category,
+  period,
   days,
   draft,
   editingCells,
@@ -1445,12 +1876,13 @@ function GridRow({
 }: {
   categoryLabel: string
   category: MenuCategory
+  period: MealPeriod
   days: WeeklyOffer['days']
   draft: WeeklyDraft
   editingCells: Record<string, boolean>
   setEditingCells: Dispatch<SetStateAction<Record<string, boolean>>>
-  setWeeklyDraft: Dispatch<SetStateAction<WeeklyDraft>>
-  onAutoTranslate: (date: string, category: MenuCategory, value: string) => void | Promise<void>
+  setWeeklyDraft: Dispatch<SetStateAction<WeeklyDraftByPeriod>>
+  onAutoTranslate: (period: MealPeriod, date: string, category: MenuCategory, value: string) => void | Promise<void>
   t: (typeof translations)[Language]
 }) {
   return (
@@ -1459,7 +1891,7 @@ function GridRow({
         {categoryLabel}
       </div>
       {days.map((day) => {
-        const cellKey = `${day.date}:${category}`
+        const cellKey = `${period}:${day.date}:${category}`
         const value = draft[day.date]?.[category] ?? emptyLocalizedText()
         const isEditing = editingCells[cellKey] ?? !value.sl
 
@@ -1472,7 +1904,7 @@ function GridRow({
                 placeholder={t.mealPlaceholder}
                 t={t}
                 onAutoTranslate={(nextValue) =>
-                  onAutoTranslate(day.date, category, nextValue)
+                  onAutoTranslate(period, day.date, category, nextValue)
                 }
                 onChange={(fieldLanguage, nextValue) => {
                   setEditingCells((current) => ({
@@ -1481,16 +1913,19 @@ function GridRow({
                   }))
                   setWeeklyDraft((current) => ({
                     ...current,
-                    [day.date]: {
-                      ...(current[day.date] ?? {}),
-                      [category]:
-                        fieldLanguage === 'sl'
-                          ? localizedDraftFromSlovenian(nextValue)
-                          : {
-                              ...(current[day.date]?.[category] ?? emptyLocalizedText()),
-                              [fieldLanguage]: nextValue,
-                            },
-                    } as Record<MenuCategory, WeeklyDraftCell>,
+                    [period]: {
+                      ...current[period],
+                      [day.date]: {
+                        ...(current[period]?.[day.date] ?? {}),
+                        [category]:
+                          fieldLanguage === 'sl'
+                            ? localizedDraftFromSlovenian(nextValue)
+                            : {
+                                ...(current[period]?.[day.date]?.[category] ?? emptyLocalizedText()),
+                                [fieldLanguage]: nextValue,
+                              },
+                      } as Record<MenuCategory, WeeklyDraftCell>,
+                    },
                   }))
                 }}
               />

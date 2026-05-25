@@ -1,4 +1,11 @@
-import { defaultWeeklyOffer, type MenuItem, type OrdersByDay, type UserProfile, type WeeklyOffer } from './mock-data'
+import {
+  defaultWeeklyOffer,
+  type MealPeriod,
+  type MenuItem,
+  type OrdersByDay,
+  type UserProfile,
+  type WeeklyOffer,
+} from './mock-data'
 import { autoTranslateText, type LocalizedText } from './meal-localization'
 import { getSupabaseServerClient } from './supabase-server'
 
@@ -27,6 +34,7 @@ type DbMealItem = {
   offer_id: string
   service_date: string | null
   category: MenuItem['category']
+  meal_period: MealPeriod | null
   title: LocalizedText | string
   description: LocalizedText | string | null
   allergens: string | null
@@ -38,6 +46,7 @@ type DbOrder = {
   service_date: string
   user_id: string
   meal_item_id: string
+  meal_period: MealPeriod | null
   note: string | null
 }
 
@@ -107,6 +116,7 @@ function mapDbOffer(offer: DbWeeklyOffer, items: DbMealItem[]): WeeklyOffer {
     .map((item) => ({
       id: item.id,
       category: item.category,
+      mealPeriod: item.meal_period ?? 'morning',
       title: asLocalizedText(item.title),
       description: item.description ? asLocalizedText(item.description) : undefined,
       allergens: item.allergens || undefined,
@@ -127,6 +137,7 @@ function mapDbOffer(offer: DbWeeklyOffer, items: DbMealItem[]): WeeklyOffer {
         .map((item) => ({
           id: item.id,
           category: item.category,
+          mealPeriod: item.meal_period ?? 'morning',
           title: asLocalizedText(item.title),
           description: item.description ? asLocalizedText(item.description) : undefined,
           allergens: item.allergens || undefined,
@@ -172,7 +183,7 @@ export async function loadAppData() {
         .order('sort_order'),
       supabase
         .from('orders')
-        .select('service_date,user_id,meal_item_id,note')
+        .select('service_date,user_id,meal_item_id,meal_period,note')
         .gte('service_date', activeOffer.starts_on)
         .lte('service_date', activeOffer.ends_on),
     ])
@@ -184,8 +195,11 @@ export async function loadAppData() {
     acc[order.service_date] = {
       ...(acc[order.service_date] ?? {}),
       [order.user_id]: {
-        mealItemId: order.meal_item_id,
-        note: order.note || undefined,
+        ...(acc[order.service_date]?.[order.user_id] ?? {}),
+        [order.meal_period ?? 'morning']: {
+          mealItemId: order.meal_item_id,
+          note: order.note || undefined,
+        },
       },
     }
     return acc

@@ -27,6 +27,7 @@ create table if not exists public.meal_items (
   offer_id uuid not null references public.weekly_offers(id) on delete cascade,
   service_date date,
   category text not null,
+  meal_period text not null default 'morning' check (meal_period in ('morning', 'afternoon')),
   title jsonb not null,
   description jsonb,
   allergens text,
@@ -40,11 +41,14 @@ create table if not exists public.orders (
   service_date date not null,
   user_id uuid not null references public.users(id) on delete cascade,
   meal_item_id uuid not null references public.meal_items(id) on delete cascade,
+  meal_period text not null default 'morning' check (meal_period in ('morning', 'afternoon')),
   created_at timestamptz not null default now(),
-  unique (service_date, user_id)
+  unique (service_date, user_id, meal_period)
 );
 
 create index if not exists idx_meal_items_offer_id on public.meal_items(offer_id);
 create index if not exists idx_meal_items_service_date on public.meal_items(service_date);
+create index if not exists idx_meal_items_meal_period on public.meal_items(meal_period);
 create index if not exists idx_orders_service_date on public.orders(service_date);
 create index if not exists idx_orders_user_id on public.orders(user_id);
+create index if not exists idx_orders_meal_period on public.orders(meal_period);

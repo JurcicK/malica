@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server'
 import { getSupabaseServerClient } from '../../../lib/supabase-server'
+import type { MealPeriod } from '../../../lib/mock-data'
+
+function isMealPeriod(value: unknown): value is MealPeriod {
+  return value === 'morning' || value === 'afternoon'
+}
 
 export async function POST(request: Request) {
   try {
@@ -7,10 +12,11 @@ export async function POST(request: Request) {
       serviceDate?: string
       userId?: string
       mealItemId?: string
+      mealPeriod?: MealPeriod
       note?: string
     }
 
-    if (!body.serviceDate || !body.userId || !body.mealItemId) {
+    if (!body.serviceDate || !body.userId || !body.mealItemId || !isMealPeriod(body.mealPeriod)) {
       return NextResponse.json({ error: 'Missing order payload.' }, { status: 400 })
     }
 
@@ -20,10 +26,11 @@ export async function POST(request: Request) {
         service_date: body.serviceDate,
         user_id: body.userId,
         meal_item_id: body.mealItemId,
+        meal_period: body.mealPeriod,
         note: body.note?.trim() || null,
       },
       {
-        onConflict: 'service_date,user_id',
+        onConflict: 'service_date,user_id,meal_period',
       }
     )
 
@@ -42,9 +49,10 @@ export async function DELETE(request: Request) {
     const body = (await request.json()) as {
       serviceDate?: string
       userId?: string
+      mealPeriod?: MealPeriod
     }
 
-    if (!body.serviceDate || !body.userId) {
+    if (!body.serviceDate || !body.userId || !isMealPeriod(body.mealPeriod)) {
       return NextResponse.json({ error: 'Missing order payload.' }, { status: 400 })
     }
 
@@ -54,6 +62,7 @@ export async function DELETE(request: Request) {
       .delete()
       .eq('service_date', body.serviceDate)
       .eq('user_id', body.userId)
+      .eq('meal_period', body.mealPeriod)
 
     if (error) {
       throw error
