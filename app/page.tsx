@@ -233,6 +233,7 @@ export default function Home() {
   const [pendingMeal, setPendingMeal] = useState<MenuItem | null>(null)
   const [pendingMealNote, setPendingMealNote] = useState('')
   const [pendingOrderRemoval, setPendingOrderRemoval] = useState<{ date: string; period: MealPeriod } | null>(null)
+  const [isConfirmingNewWeek, setIsConfirmingNewWeek] = useState(false)
   const [newWeekStart, setNewWeekStart] = useState(addDaysToIsoDate(new Date().toISOString().slice(0, 10), 7))
   const [newWeekSource, setNewWeekSource] = useState('')
   const [copyAlwaysAvailableToNewWeek, setCopyAlwaysAvailableToNewWeek] = useState(true)
@@ -702,7 +703,9 @@ export default function Home() {
   }
 
   const placeOrder = async (itemId: string) => {
-    if (!loggedInUser || loggedInUser.role !== 'employee' || !selectedMealPeriod) return
+    if (!loggedInUser || loggedInUser.role !== 'employee') return
+
+    const orderMealPeriod = activeMealPeriod
 
     if (isSelectedDayLocked) {
       setMessage(
@@ -724,17 +727,18 @@ export default function Home() {
           serviceDate: selectedOfferDay.date,
           userId: loggedInUser.id,
           mealItemId: itemId,
-          mealPeriod: selectedMealPeriod,
+          mealPeriod: orderMealPeriod,
           note: pendingMeal?.isAlwaysAvailable ? pendingMealNote : '',
         }),
       })
 
       if (!response.ok) {
-        setMessage('Shranjevanje naroÄŤila v bazo ni uspelo.')
+        const data = (await response.json().catch(() => null)) as { error?: string } | null
+        setMessage(data?.error ?? 'Shranjevanje naročila v bazo ni uspelo.')
         return
       }
     } catch {
-      setMessage('Shranjevanje naroÄŤila v bazo ni uspelo.')
+      setMessage('Shranjevanje naročila v bazo ni uspelo.')
       return
     }
 
@@ -744,7 +748,7 @@ export default function Home() {
         ...(current[selectedOfferDay.date] ?? {}),
         [loggedInUser.id]: {
           ...(current[selectedOfferDay.date]?.[loggedInUser.id] ?? {}),
-          [selectedMealPeriod]: {
+          [orderMealPeriod]: {
             mealItemId: itemId,
             note: pendingMeal?.isAlwaysAvailable ? pendingMealNote.trim() || undefined : undefined,
           },
@@ -754,7 +758,7 @@ export default function Home() {
 
     setMessage(
       formatTranslation(t.orderSaved, {
-        day: `${getLocalizedText(selectedOfferDay.label, language).toLowerCase()} (${getMealPeriodLabel(selectedMealPeriod, language)})`,
+        day: `${getLocalizedText(selectedOfferDay.label, language).toLowerCase()} (${getMealPeriodLabel(orderMealPeriod, language)})`,
       })
     )
     setPendingMeal(null)
@@ -822,6 +826,8 @@ export default function Home() {
   }
 
   const createNewWeek = async () => {
+    setIsConfirmingNewWeek(false)
+
     try {
       const response = await fetch('/api/weekly-offer', {
         method: 'POST',
@@ -1559,7 +1565,7 @@ export default function Home() {
                   </div>
                   <div className="mt-5">
                     <button
-                      onClick={createNewWeek}
+                      onClick={() => setIsConfirmingNewWeek(true)}
                       className="rounded-2xl bg-[var(--accent)] px-5 py-3 font-semibold text-white transition hover:bg-[var(--accent-strong)]"
                     >
                       Ustvari nov teden
@@ -1791,6 +1797,18 @@ export default function Home() {
             onConfirm={() => {
               void removeOrder(pendingOrderRemoval.date, pendingOrderRemoval.period)
               setPendingOrderRemoval(null)
+            }}
+          />
+        ) : null}
+        {isConfirmingNewWeek ? (
+          <ConfirmModal
+            title="Potrdi nov teden"
+            body={`To bo ustvarilo nov aktiven teden od ${newWeekStart} do ${addDaysToIsoDate(newWeekStart, 4)}. Trenutni teden se bo skril uporabnikom. Nadaljujem?`}
+            cancelLabel={t.cancel}
+            confirmLabel="Ustvari nov teden"
+            onCancel={() => setIsConfirmingNewWeek(false)}
+            onConfirm={() => {
+              void createNewWeek()
             }}
           />
         ) : null}

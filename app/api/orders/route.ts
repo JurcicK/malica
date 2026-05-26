@@ -21,6 +21,24 @@ export async function POST(request: Request) {
     }
 
     const supabase = getSupabaseServerClient()
+    const { data: mealItem, error: mealItemError } = await supabase
+      .from('meal_items')
+      .select('id,meal_period')
+      .eq('id', body.mealItemId)
+      .maybeSingle()
+
+    if (mealItemError) {
+      throw mealItemError
+    }
+
+    if (!mealItem) {
+      return NextResponse.json({ error: 'Izbrana malica ne obstaja več v ponudbi.' }, { status: 400 })
+    }
+
+    if (mealItem.meal_period !== body.mealPeriod) {
+      return NextResponse.json({ error: 'Izbrana malica ne spada v izbran termin.' }, { status: 400 })
+    }
+
     const { error } = await supabase.from('orders').upsert(
       {
         service_date: body.serviceDate,
@@ -39,8 +57,9 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json({ ok: true })
-  } catch {
-    return NextResponse.json({ error: 'Saving order failed.' }, { status: 500 })
+  } catch (error) {
+    console.error('Saving order failed.', error)
+    return NextResponse.json({ error: 'Shranjevanje naročila v bazo ni uspelo.' }, { status: 500 })
   }
 }
 
@@ -69,7 +88,8 @@ export async function DELETE(request: Request) {
     }
 
     return NextResponse.json({ ok: true })
-  } catch {
-    return NextResponse.json({ error: 'Deleting order failed.' }, { status: 500 })
+  } catch (error) {
+    console.error('Deleting order failed.', error)
+    return NextResponse.json({ error: 'Odjava malice iz baze ni uspela.' }, { status: 500 })
   }
 }
