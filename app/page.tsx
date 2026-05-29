@@ -271,6 +271,22 @@ function getWeekKey(offer: WeeklyOffer) {
   return offer.id ?? offer.days[0]?.date ?? getLocalizedText(offer.weekLabel, 'sl')
 }
 
+function formatIsoDateCompact(dateString: string) {
+  const [year, month, day] = dateString.split('-')
+  return `${day}.${month}.${year}`
+}
+
+function formatWeekRange(offer: WeeklyOffer) {
+  const firstDay = offer.days[0]?.date
+  const lastDay = offer.days[offer.days.length - 1]?.date
+
+  if (!firstDay || !lastDay) {
+    return getLocalizedText(offer.weekLabel, 'sl')
+  }
+
+  return `${formatIsoDateCompact(firstDay)}-${formatIsoDateCompact(lastDay)}`
+}
+
 function getPeriodOrders(orders: OrdersByDay, date: string, period: MealPeriod) {
   return Object.entries(orders[date] ?? {})
     .map(([userId, userOrders]) => ({ userId, order: userOrders[period] }))
@@ -1390,7 +1406,7 @@ export default function Home() {
                 >
                   {weeklyOffers.map((offer) => (
                     <option key={getWeekKey(offer)} value={getWeekKey(offer)}>
-                      {getLocalizedText(offer.weekLabel, language)}
+                      {formatWeekRange(offer)}
                     </option>
                   ))}
                 </select>
