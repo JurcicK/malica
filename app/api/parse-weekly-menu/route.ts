@@ -168,6 +168,32 @@ function splitMeal(value: string) {
   }
 }
 
+function findCellValue(values: Map<string, string>, ref: string) {
+  return normalizeText(values.get(ref) ?? '').toLowerCase()
+}
+
+function findHeaderRow(values: Map<string, string>) {
+  for (let row = 1; row <= 30; row += 1) {
+    const categories = ['B', 'C', 'D', 'E'].map((column) => categoryMap[normalizeCategory(values.get(`${column}${row}`) ?? '')])
+
+    if (categories.every(Boolean)) {
+      return { row, categories }
+    }
+  }
+
+  throw new Error('Excel categories were not recognized.')
+}
+
+function findDayRow(values: Map<string, string>, dayName: string) {
+  for (let row = 1; row <= 60; row += 1) {
+    if (findCellValue(values, `A${row}`) === dayName) {
+      return row
+    }
+  }
+
+  throw new Error(`Day ${dayName} not found.`)
+}
+
 export async function POST(request: Request) {
   try {
     const formData = await request.formData()
@@ -189,19 +215,10 @@ export async function POST(request: Request) {
 
     const values = parseSheetValues(sheetXml.toString('utf8'), sharedStrings)
     const dates = parseDateRange(values.get('A3') ?? '', file.name, Array.from(values.values()).join(' '))
-    const categories = ['B', 'C', 'D', 'E'].map((column) => categoryMap[normalizeCategory(values.get(`${column}3`) ?? '')])
-
-    if (categories.some((category) => !category)) {
-      return NextResponse.json({ error: 'Excel categories were not recognized.' }, { status: 400 })
-    }
+    const { categories } = findHeaderRow(values)
 
     const days: ParsedDay[] = dayNames.map((dayName, dayIndex) => {
-      const row = dayIndex + 4
-      const actualDayName = normalizeText(values.get(`A${row}`) ?? '').toLowerCase()
-
-      if (actualDayName !== dayName) {
-        throw new Error(`Expected ${dayName} in row ${row}.`)
-      }
+      const row = findDayRow(values, dayName)
 
       const items: ParsedMeal[] = []
 
