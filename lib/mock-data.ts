@@ -36,6 +36,7 @@ export type DayOffer = {
 }
 
 export type WeeklyOffer = {
+  id?: string
   weekLabel: LocalizedText
   sourceLabel: LocalizedText
   cutoffHour: number

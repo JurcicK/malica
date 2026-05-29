@@ -124,6 +124,7 @@ function mapDbOffer(offer: DbWeeklyOffer, items: DbMealItem[]): WeeklyOffer {
     }))
 
   return {
+    id: offer.id,
     weekLabel: asLocalizedText(offer.week_label || defaultWeeklyOffer.weekLabel),
     sourceLabel: asLocalizedText(offer.source_label || defaultWeeklyOffer.sourceLabel),
     cutoffHour: offer.cutoff_hour,
@@ -148,44 +149,50 @@ function mapDbOffer(offer: DbWeeklyOffer, items: DbMealItem[]): WeeklyOffer {
 
 export async function loadAppData() {
   const supabase = getSupabaseServerClient()
+  const today = new Date().toISOString().slice(0, 10)
 
-  const [{ data: users, error: usersError }, { data: activeOffer, error: offerError }] =
+  const [{ data: users, error: usersError }, { data: activeOffers, error: offersError }] =
     await Promise.all([
       supabase.from('users').select('*').eq('active', true).order('full_name'),
       supabase
         .from('weekly_offers')
         .select('*')
         .eq('is_active', true)
-        .order('starts_on', { ascending: false })
-        .limit(1)
-        .maybeSingle(),
+        .gte('ends_on', today)
+        .order('starts_on', { ascending: true }),
     ])
 
   if (usersError) throw usersError
-  if (offerError) throw offerError
+  if (offersError) throw offersError
 
   const mappedUsers = mapDbUsers((users as DbUser[] | null) ?? [])
+  const visibleOffers = (activeOffers as DbWeeklyOffer[] | null) ?? []
 
-  if (!activeOffer) {
+  if (visibleOffers.length === 0) {
     return {
       users: mappedUsers,
       weeklyOffer: defaultWeeklyOffer,
+      weeklyOffers: [defaultWeeklyOffer],
       orders: {} as OrdersByDay,
     }
   }
+
+  const offerIds = visibleOffers.map((offer) => offer.id)
+  const startsOn = visibleOffers[0].starts_on
+  const endsOn = visibleOffers[visibleOffers.length - 1].ends_on
 
   const [{ data: items, error: itemsError }, { data: orders, error: ordersError }] =
     await Promise.all([
       supabase
         .from('meal_items')
         .select('*')
-        .eq('offer_id', activeOffer.id)
+        .in('offer_id', offerIds)
         .order('sort_order'),
       supabase
         .from('orders')
         .select('service_date,user_id,meal_item_id,meal_period,note')
-        .gte('service_date', activeOffer.starts_on)
-        .lte('service_date', activeOffer.ends_on),
+        .gte('service_date', startsOn)
+        .lte('service_date', endsOn),
     ])
 
   if (itemsError) throw itemsError
@@ -205,9 +212,18 @@ export async function loadAppData() {
     return acc
   }, {})
 
+  const mappedItems = (items as DbMealItem[] | null) ?? []
+  const weeklyOffers = visibleOffers.map((offer) =>
+    mapDbOffer(
+      offer,
+      mappedItems.filter((item) => item.offer_id === offer.id)
+    )
+  )
+
   return {
     users: mappedUsers,
-    weeklyOffer: mapDbOffer(activeOffer as DbWeeklyOffer, (items as DbMealItem[] | null) ?? []),
+    weeklyOffer: weeklyOffers[0],
+    weeklyOffers,
     orders: mappedOrders,
   }
 }

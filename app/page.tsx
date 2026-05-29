@@ -43,6 +43,14 @@ type WeeklyDraftCell = LocalizedText
 type WeeklyDraft = Record<string, Record<MenuCategory, WeeklyDraftCell>>
 type WeeklyDraftByPeriod = Record<MealPeriod, WeeklyDraft>
 type PrintDepartment = 'Pisarne' | 'Delavnica'
+type ParsedWeeklyMenuDay = {
+  date: string
+  items: Array<{
+    category: MenuCategory
+    title: string
+    allergens?: string
+  }>
+}
 type AlwaysAvailableDraftItem = {
   id: string
   mealPeriod: MealPeriod
@@ -67,12 +75,69 @@ function formatDate(dateString: string, language: Language) {
   }).format(new Date(`${dateString}T12:00:00`))
 }
 
-function isLocked(dateString: string, cutoffHour: number, now: Date) {
-  return now >= new Date(`${dateString}T${String(cutoffHour).padStart(2, '0')}:00:00`)
+type CutoffTime = {
+  hour: number
+  minute: number
+}
+
+function getWeekday(dateString: string) {
+  return new Date(`${dateString}T12:00:00`).getDay()
+}
+
+function getCutoffTimeForDay(dateString: string, mealPeriod: MealPeriod, defaultCutoffHour: number): CutoffTime {
+  const weekday = getWeekday(dateString)
+
+  if (weekday === 6) {
+    return { hour: 9, minute: 0 }
+  }
+
+  if (weekday === 1 && mealPeriod === 'afternoon') {
+    return { hour: 15, minute: 30 }
+  }
+
+  return { hour: defaultCutoffHour, minute: 0 }
+}
+
+function formatCutoffTime(cutoff: CutoffTime) {
+  return `${String(cutoff.hour).padStart(2, '0')}:${String(cutoff.minute).padStart(2, '0')}`
+}
+
+function isLocked(dateString: string, cutoff: CutoffTime, now: Date) {
+  return now >= new Date(`${dateString}T${formatCutoffTime(cutoff)}:00`)
 }
 
 function isPastDay(dateString: string, now: Date) {
   return dateString < now.toISOString().slice(0, 10)
+}
+
+function isSaturday(dateString: string) {
+  return getWeekday(dateString) === 6
+}
+
+function normalizeDepartmentName(department: string) {
+  const normalized = department.trim().toLowerCase()
+
+  if (normalized === 'delavnica') {
+    return 'Delavnica'
+  }
+
+  if (normalized === 'pisarne' || normalized === 'pisarna') {
+    return 'Pisarne'
+  }
+
+  return department.trim() || 'Ostalo'
+}
+
+function canSeeOfferDay(dateString: string, user: UserProfile | null) {
+  if (!isSaturday(dateString)) {
+    return true
+  }
+
+  if (!user || user.role === 'admin') {
+    return true
+  }
+
+  return normalizeDepartmentName(user.department) === 'Delavnica'
 }
 
 function getInitialSelectedDay(offer: WeeklyOffer) {
@@ -81,7 +146,9 @@ function getInitialSelectedDay(offer: WeeklyOffer) {
 
   return (
     offer.days.find((day) => day.date === todayIso)?.date ??
-    offer.days.find((day) => !isLocked(day.date, offer.cutoffHour, today))?.date ??
+    offer.days.find((day) =>
+      !isLocked(day.date, getCutoffTimeForDay(day.date, defaultMealPeriod, offer.cutoffHour), today)
+    )?.date ??
     offer.days[0].date
   )
 }
@@ -200,6 +267,10 @@ function getMealPeriodLabel(period: MealPeriod, language: Language) {
   return mealPeriodLabels[period][language]
 }
 
+function getWeekKey(offer: WeeklyOffer) {
+  return offer.id ?? offer.days[0]?.date ?? getLocalizedText(offer.weekLabel, 'sl')
+}
+
 function getPeriodOrders(orders: OrdersByDay, date: string, period: MealPeriod) {
   return Object.entries(orders[date] ?? {})
     .map(([userId, userOrders]) => ({ userId, order: userOrders[period] }))
@@ -226,7 +297,9 @@ export default function Home() {
   const [loggedInUser, setLoggedInUser] = useState<UserProfile | null>(null)
   const [users, setUsers] = useState<UserProfile[]>(demoUsers)
   const [orders, setOrders] = useState<OrdersByDay>(defaultOrders)
+  const [weeklyOffers, setWeeklyOffers] = useState<WeeklyOffer[]>([defaultWeeklyOffer])
   const [weeklyOffer, setWeeklyOffer] = useState<WeeklyOffer>(defaultWeeklyOffer)
+  const [selectedWeekKey, setSelectedWeekKey] = useState(getWeekKey(defaultWeeklyOffer))
   const [selectedDay, setSelectedDay] = useState(defaultWeeklyOffer.days[0].date)
   const [selectedMealPeriod, setSelectedMealPeriod] = useState<MealPeriod | null>(null)
   const [now, setNow] = useState(new Date())
@@ -243,6 +316,7 @@ export default function Home() {
   )
   const [editingCells, setEditingCells] = useState<Record<string, boolean>>({})
   const [isSavingOffer, setIsSavingOffer] = useState(false)
+  const [isImportingWeeklyMenu, setIsImportingWeeklyMenu] = useState(false)
   const [printDepartment, setPrintDepartment] = useState<PrintDepartment>('Pisarne')
 
   useEffect(() => {
@@ -250,7 +324,9 @@ export default function Home() {
       const normalizedOffer = normalizeWeeklyOffer(defaultWeeklyOffer)
 
       setOrders(defaultOrders)
+      setWeeklyOffers([normalizedOffer])
       setWeeklyOffer(normalizedOffer)
+      setSelectedWeekKey(getWeekKey(normalizedOffer))
       setSelectedDay(getInitialSelectedDay(normalizedOffer))
       setWeeklyDraft(buildWeeklyDraft(normalizedOffer))
       setAlwaysAvailableDraft(buildAlwaysAvailableDraft(normalizedOffer))
@@ -277,6 +353,15 @@ export default function Home() {
 
   const t = translations[language]
   type AdminOrderPerson = { user: UserProfile; note: string | undefined }
+  const switchWeeklyOffer = (offer: WeeklyOffer) => {
+    setWeeklyOffer(offer)
+    setSelectedWeekKey(getWeekKey(offer))
+    setSelectedDay(getInitialSelectedDay(offer))
+    setWeeklyDraft(buildWeeklyDraft(offer))
+    setAlwaysAvailableDraft(buildAlwaysAvailableDraft(offer))
+    setEditingCells({})
+    setMessage('')
+  }
   const removeMealModal = {
     sl: {
       title: 'Potrdi odjavo',
@@ -299,9 +384,9 @@ export default function Home() {
   const visibleOfferDays = useMemo(
     () =>
       loggedInUser?.role === 'employee'
-        ? weeklyOffer.days.filter((day) => !isPastDay(day.date, now))
-        : weeklyOffer.days,
-    [loggedInUser?.role, now, weeklyOffer.days]
+        ? weeklyOffer.days.filter((day) => !isPastDay(day.date, now) && canSeeOfferDay(day.date, loggedInUser))
+        : weeklyOffer.days.filter((day) => canSeeOfferDay(day.date, loggedInUser)),
+    [loggedInUser, now, weeklyOffer.days]
   )
   const activeSelectedDay = useMemo(() => {
     const selectedStillVisible = visibleOfferDays.some((day) => day.date === selectedDay)
@@ -323,21 +408,8 @@ export default function Home() {
 
   const selectedOrder = loggedInUser ? orders[activeSelectedDay]?.[loggedInUser.id]?.[activeMealPeriod] : undefined
   const selectedOrderId = selectedOrder?.mealItemId
-  const isSelectedDayLocked = isLocked(selectedOfferDay.date, weeklyOffer.cutoffHour, now)
-  const normalizeDepartment = (department: string) => {
-    const normalized = department.trim().toLowerCase()
-
-    if (normalized === 'delavnica') {
-      return 'Delavnica'
-    }
-
-    if (normalized === 'pisarne' || normalized === 'pisarna') {
-      return 'Pisarne'
-    }
-
-    return department.trim() || 'Ostalo'
-  }
-
+  const selectedDayCutoff = getCutoffTimeForDay(selectedOfferDay.date, activeMealPeriod, weeklyOffer.cutoffHour)
+  const isSelectedDayLocked = isLocked(selectedOfferDay.date, selectedDayCutoff, now)
   const adminBreakdown = mergedItems
     .map((item) => {
       const people = getPeriodOrders(orders, selectedOfferDay.date, activeMealPeriod)
@@ -362,7 +434,7 @@ export default function Home() {
       >
     >((acc, entry) => {
       const groupedPeople = entry.people.reduce<Record<string, AdminOrderPerson[]>>((grouped, person) => {
-        const department = normalizeDepartment(person.user.department)
+        const department = normalizeDepartmentName(person.user.department)
         grouped[department] = [...(grouped[department] ?? []), person]
         return grouped
       }, {})
@@ -670,6 +742,7 @@ export default function Home() {
         user?: UserProfile
         users?: UserProfile[]
         weeklyOffer?: WeeklyOffer
+        weeklyOffers?: WeeklyOffer[]
         orders?: OrdersByDay
       }
 
@@ -679,11 +752,20 @@ export default function Home() {
       }
 
       setUsers(data.users)
-      setWeeklyOffer(data.weeklyOffer)
-      setWeeklyDraft(buildWeeklyDraft(data.weeklyOffer))
-      setAlwaysAvailableDraft(buildAlwaysAvailableDraft(data.weeklyOffer))
+      const normalizedOffers = (data.weeklyOffers?.length ? data.weeklyOffers : [data.weeklyOffer]).map(normalizeWeeklyOffer)
+      const normalizedOffer = normalizeWeeklyOffer(data.weeklyOffer)
+      const selectedOffer =
+        normalizedOffers.find((offer) => getWeekKey(offer) === getWeekKey(normalizedOffer)) ??
+        normalizedOffers[0] ??
+        normalizedOffer
+
+      setWeeklyOffers(normalizedOffers)
+      setWeeklyOffer(selectedOffer)
+      setSelectedWeekKey(getWeekKey(selectedOffer))
+      setWeeklyDraft(buildWeeklyDraft(selectedOffer))
+      setAlwaysAvailableDraft(buildAlwaysAvailableDraft(selectedOffer))
       setOrders(data.orders)
-      setSelectedDay(getInitialSelectedDay(data.weeklyOffer))
+      setSelectedDay(getInitialSelectedDay(selectedOffer))
       setLoggedInUser(data.user)
       setMessage('')
     } catch {
@@ -711,7 +793,7 @@ export default function Home() {
       setMessage(
         formatTranslation(t.dayLockedMessage, {
           day: getLocalizedText(selectedOfferDay.label, language),
-          hour: weeklyOffer.cutoffHour,
+          hour: formatCutoffTime(selectedDayCutoff),
         })
       )
       return
@@ -774,11 +856,13 @@ export default function Home() {
       return
     }
 
-    if (isLocked(dayDate, weeklyOffer.cutoffHour, now)) {
+    const dayCutoff = getCutoffTimeForDay(dayDate, mealPeriod, weeklyOffer.cutoffHour)
+
+    if (isLocked(dayDate, dayCutoff, now)) {
       setMessage(
         formatTranslation(t.dayLockedMessage, {
           day: getLocalizedText(day.label, language),
-          hour: weeklyOffer.cutoffHour,
+          hour: formatCutoffTime(dayCutoff),
         })
       )
       return
@@ -852,6 +936,7 @@ export default function Home() {
 
       const data = (await response.json()) as {
         weeklyOffer?: WeeklyOffer
+        weeklyOffers?: WeeklyOffer[]
         orders?: OrdersByDay
       }
 
@@ -860,15 +945,101 @@ export default function Home() {
         return
       }
 
-      setWeeklyOffer(data.weeklyOffer)
-      setWeeklyDraft(buildWeeklyDraft(data.weeklyOffer))
-      setAlwaysAvailableDraft(buildAlwaysAvailableDraft(data.weeklyOffer))
+      const nextOffers = (data.weeklyOffers?.length ? data.weeklyOffers : [data.weeklyOffer]).map(normalizeWeeklyOffer)
+      const createdOffer =
+        nextOffers.find((offer) => offer.days[0]?.date === newWeekStart) ??
+        normalizeWeeklyOffer(data.weeklyOffer)
+
+      setWeeklyOffers(nextOffers)
+      setWeeklyOffer(createdOffer)
+      setSelectedWeekKey(getWeekKey(createdOffer))
+      setWeeklyDraft(buildWeeklyDraft(createdOffer))
+      setAlwaysAvailableDraft(buildAlwaysAvailableDraft(createdOffer))
       setOrders(data.orders ?? {})
-      setSelectedDay(getInitialSelectedDay(data.weeklyOffer))
+      setSelectedDay(getInitialSelectedDay(createdOffer))
       setEditingCells({})
-      setMessage('Novi teden je ustvarjen in nastavljen kot aktiven.')
+      setMessage('Novi teden je ustvarjen in objavljen. Trenutni teden ostane viden, dokler ne poteče.')
     } catch {
       setMessage('Ustvarjanje novega tedna ni uspelo.')
+    }
+  }
+
+  const importMorningMenuFromExcel = async (file: File | undefined) => {
+    if (!file) {
+      return
+    }
+
+    setIsImportingWeeklyMenu(true)
+    setMessage('')
+
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const response = await fetch('/api/parse-weekly-menu', {
+        method: 'POST',
+        body: formData,
+      })
+
+      const data = (await response.json()) as {
+        days?: ParsedWeeklyMenuDay[]
+        error?: string
+      }
+
+      if (!response.ok || !data.days) {
+        setMessage(data.error ?? 'Branje Excel ponudbe ni uspelo.')
+        return
+      }
+
+      const offerDates = new Set(weeklyOffer.days.map((day) => day.date))
+      const missingDates = data.days.filter((day) => !offerDates.has(day.date))
+
+      if (missingDates.length > 0) {
+        setMessage('Excel ponudba ne ustreza izbranemu tednu. Najprej izberi ali ustvari pravi teden.')
+        return
+      }
+
+      const nextOffer: WeeklyOffer = {
+        ...weeklyOffer,
+        days: weeklyOffer.days.map((day) => {
+          const importedDay = data.days?.find((entry) => entry.date === day.date)
+
+          if (!importedDay) {
+            return day
+          }
+
+          const otherItems = day.items.filter((item) => item.mealPeriod !== 'morning')
+          const importedItems = importedDay.items.map((item) => {
+            const existingItem = day.items.find(
+              (candidate) => candidate.category === item.category && candidate.mealPeriod === 'morning'
+            )
+
+            return {
+              id: existingItem?.id ?? `${day.date}-${item.category}-morning`,
+              category: item.category,
+              mealPeriod: 'morning' as const,
+              title: localizedDraftFromSlovenian(item.title),
+              allergens: item.allergens,
+              description: existingItem?.description,
+            } satisfies MenuItem
+          })
+
+          return {
+            ...day,
+            items: [...otherItems, ...importedItems],
+          }
+        }),
+      }
+
+      setSelectedMealPeriod('morning')
+      setWeeklyOffer(nextOffer)
+      setWeeklyDraft(buildWeeklyDraft(nextOffer))
+      setAlwaysAvailableDraft(buildAlwaysAvailableDraft(nextOffer))
+      setMessage('Excel ponudba je uvožena v dopoldansko ponudbo. Preglej in klikni Dodaj v ponudbo.')
+    } catch {
+      setMessage('Branje Excel ponudbe ni uspelo.')
+    } finally {
+      setIsImportingWeeklyMenu(false)
     }
   }
 
@@ -985,13 +1156,22 @@ export default function Home() {
 
       const data = (await response.json()) as {
         weeklyOffer?: WeeklyOffer
+        weeklyOffers?: WeeklyOffer[]
         orders?: OrdersByDay
       }
 
-      const savedOffer = data.weeklyOffer ?? nextOffer
+      const nextOffers = data.weeklyOffers?.length
+        ? data.weeklyOffers.map(normalizeWeeklyOffer)
+        : weeklyOffers.map((offer) => (getWeekKey(offer) === getWeekKey(nextOffer) ? nextOffer : offer))
+      const savedOffer =
+        nextOffers.find((offer) => getWeekKey(offer) === getWeekKey(nextOffer)) ??
+        data.weeklyOffer ??
+        nextOffer
       const savedOrders = data.orders ?? orders
 
+      setWeeklyOffers(nextOffers)
       setWeeklyOffer(savedOffer)
+      setSelectedWeekKey(getWeekKey(savedOffer))
       setWeeklyDraft(buildWeeklyDraft(savedOffer))
       setAlwaysAvailableDraft(buildAlwaysAvailableDraft(savedOffer))
       setOrders(savedOrders)
@@ -1196,6 +1376,25 @@ export default function Home() {
               <p className="mt-2 text-sm text-[var(--muted)]">
                 {t.weekSourceIntro}: {getLocalizedText(weeklyOffer.sourceLabel, language)}
               </p>
+              <label className="mt-4 block max-w-sm">
+                <span className="mb-2 block text-sm font-medium text-[var(--muted)]">Teden</span>
+                <select
+                  value={selectedWeekKey}
+                  onChange={(event) => {
+                    const nextOffer = weeklyOffers.find((offer) => getWeekKey(offer) === event.target.value)
+                    if (nextOffer) {
+                      switchWeeklyOffer(nextOffer)
+                    }
+                  }}
+                  className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                >
+                  {weeklyOffers.map((offer) => (
+                    <option key={getWeekKey(offer)} value={getWeekKey(offer)}>
+                      {getLocalizedText(offer.weekLabel, language)}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <div className="rounded-2xl border border-[var(--line)] bg-white/70 px-4 py-3 text-sm">
@@ -1255,7 +1454,8 @@ export default function Home() {
             </p>
             <div className={`mt-4 ${loggedInUser.role === 'admin' ? 'grid gap-3 sm:grid-cols-2 lg:grid-cols-5' : 'space-y-3'}`}>
               {visibleOfferDays.map((day) => {
-                const locked = isLocked(day.date, weeklyOffer.cutoffHour, now)
+                const dayCutoff = getCutoffTimeForDay(day.date, activeMealPeriod, weeklyOffer.cutoffHour)
+                const locked = isLocked(day.date, dayCutoff, now)
                 const dayOrders = getPeriodOrders(orders, day.date, activeMealPeriod).length
                 const userOrder = loggedInUser ? orders[day.date]?.[loggedInUser.id]?.[activeMealPeriod] : undefined
                 const userOrderId = userOrder?.mealItemId
@@ -1357,7 +1557,7 @@ export default function Home() {
                 </div>
                 <div className="rounded-2xl border border-[var(--line)] bg-white/70 px-4 py-3 text-sm">
                   <p className="font-semibold">
-                    {t.cutoffAt} {String(weeklyOffer.cutoffHour).padStart(2, '0')}:00
+                    {t.cutoffAt} {formatCutoffTime(selectedDayCutoff)}
                   </p>
                   <p className="text-[var(--muted)]">
                     {isSelectedDayLocked ? t.orderingClosed : t.orderingOpen}
@@ -1581,9 +1781,39 @@ export default function Home() {
                     {t.addMeal} - {getMealPeriodLabel(activeMealPeriod, language)}
                   </h3>
                   <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{t.addMealHint}</p>
+                  <div className="mt-5 rounded-[1rem] border border-[var(--line)] bg-white/70 p-4">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-[var(--foreground)]">
+                          Uvoz dopoldanske ponudbe iz Excela
+                        </p>
+                        <p className="mt-1 text-sm leading-6 text-[var(--muted)]">
+                          Izberi tedensko predlogo. Uvoz napolni ponedeljek-petek za dopoldansko malico.
+                        </p>
+                      </div>
+                      <label className="inline-flex cursor-pointer items-center justify-center rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold transition hover:bg-orange-50">
+                        {isImportingWeeklyMenu ? 'Uvažam...' : 'Izberi Excel'}
+                        <input
+                          type="file"
+                          accept=".xlsx"
+                          disabled={isImportingWeeklyMenu}
+                          onChange={(event) => {
+                            void importMorningMenuFromExcel(event.target.files?.[0])
+                            event.target.value = ''
+                          }}
+                          className="sr-only"
+                        />
+                      </label>
+                    </div>
+                  </div>
                   <div className="mt-6 overflow-x-auto">
                     <div className="min-w-[860px]">
-                      <div className="grid grid-cols-[160px_repeat(5,minmax(0,1fr))] gap-3">
+                      <div
+                        className="grid gap-3"
+                        style={{
+                          gridTemplateColumns: `160px repeat(${weeklyOffer.days.length}, minmax(0, 1fr))`,
+                        }}
+                      >
                         <div className="rounded-2xl bg-white/60 px-4 py-3 text-sm font-semibold text-[var(--muted)]">
                           {t.category}
                         </div>

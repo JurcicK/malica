@@ -9,6 +9,8 @@ check (meal_period in ('morning', 'afternoon'));
 alter table public.orders
 drop constraint if exists orders_service_date_user_id_key;
 
+drop index if exists public.idx_orders_service_date_user_id;
+
 do $$
 begin
   if not exists (

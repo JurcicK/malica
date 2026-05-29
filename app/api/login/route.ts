@@ -40,6 +40,7 @@ export async function POST(request: Request) {
       user: payloadUser,
       users: appData.users,
       weeklyOffer: appData.weeklyOffer,
+      weeklyOffers: appData.weeklyOffers,
       orders: appData.orders,
     })
   } catch {

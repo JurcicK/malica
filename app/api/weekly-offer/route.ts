@@ -34,7 +34,7 @@ export async function POST(request: Request) {
 
       const supabase = getSupabaseServerClient()
       const startsOn = body.startsOn
-      const endsOn = addDays(startsOn, 4)
+      const endsOn = addDays(startsOn, 5)
       const cutoffHour = body.cutoffHour ?? 10
 
       const weekLabel = {
@@ -93,8 +93,6 @@ export async function POST(request: Request) {
           })) ?? []
       }
 
-      await supabase.from('weekly_offers').update({ is_active: false }).eq('is_active', true)
-
       const { data: insertedOffer, error: insertOfferError } = await supabase
         .from('weekly_offers')
         .insert({
@@ -137,6 +135,7 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: true,
         weeklyOffer: appData.weeklyOffer,
+        weeklyOffers: appData.weeklyOffers,
         orders: appData.orders,
       })
     }
@@ -151,17 +150,19 @@ export async function POST(request: Request) {
     const startsOn = weeklyOffer.days[0].date
     const endsOn = weeklyOffer.days[weeklyOffer.days.length - 1].date
 
-    const { data: currentActiveOffer } = await supabase
-      .from('weekly_offers')
-      .select('id')
-      .eq('is_active', true)
-      .order('starts_on', { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    let offerId = weeklyOffer.id
 
-    await supabase.from('weekly_offers').update({ is_active: false }).eq('is_active', true)
+    if (!offerId) {
+      const { data: currentActiveOffer } = await supabase
+        .from('weekly_offers')
+        .select('id')
+        .eq('is_active', true)
+        .eq('starts_on', startsOn)
+        .limit(1)
+        .maybeSingle()
 
-    let offerId = currentActiveOffer?.id
+      offerId = currentActiveOffer?.id
+    }
 
     if (offerId) {
       const { error: updateOfferError } = await supabase
@@ -310,6 +311,7 @@ export async function POST(request: Request) {
       ok: true,
       message: `Saved weekly offer ${getLocalizedText(weeklyOffer.weekLabel, 'sl')}`,
       weeklyOffer: appData.weeklyOffer,
+      weeklyOffers: appData.weeklyOffers,
       orders: appData.orders,
     })
   } catch {
