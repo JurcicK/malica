@@ -134,8 +134,11 @@ function parseSheetValues(xml: string, sharedStrings: string[]) {
   return values
 }
 
-function parseDateRange(value: string) {
-  const match = normalizeText(value).match(/(\d{1,2})\.(\d{1,2})\s*-\s*(\d{1,2})\.(\d{1,2})\.(\d{4})/)
+function parseDateRange(...values: string[]) {
+  const source = values.map(normalizeText).join(' ')
+  const match = source.match(
+    /(\d{1,2})\.\s*(\d{1,2})\.?\s*[-–—]\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})/
+  )
 
   if (!match) {
     throw new Error('Date range not found.')
@@ -185,7 +188,7 @@ export async function POST(request: Request) {
     }
 
     const values = parseSheetValues(sheetXml.toString('utf8'), sharedStrings)
-    const dates = parseDateRange(values.get('A3') ?? '')
+    const dates = parseDateRange(values.get('A3') ?? '', file.name, Array.from(values.values()).join(' '))
     const categories = ['B', 'C', 'D', 'E'].map((column) => categoryMap[normalizeCategory(values.get(`${column}3`) ?? '')])
 
     if (categories.some((category) => !category)) {
