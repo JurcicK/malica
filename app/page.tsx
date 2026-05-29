@@ -141,6 +141,22 @@ function canSeeOfferDay(dateString: string, user: UserProfile | null) {
   return normalizeDepartmentName(user.department) === 'Delavnica'
 }
 
+function getDepartmentMealPeriods(user: UserProfile | null): MealPeriod[] {
+  if (!user || user.role === 'admin') {
+    return mealPeriods
+  }
+
+  return normalizeDepartmentName(user.department) === 'Delavnica' ? mealPeriods : [defaultMealPeriod]
+}
+
+function getAvailableMealPeriods(dateString: string, user: UserProfile | null): MealPeriod[] {
+  if (isSaturday(dateString)) {
+    return [defaultMealPeriod]
+  }
+
+  return getDepartmentMealPeriods(user)
+}
+
 function getInitialSelectedDay(offer: WeeklyOffer) {
   const today = new Date()
   const todayIso = today.toISOString().slice(0, 10)
@@ -328,6 +344,7 @@ export default function Home() {
   const [pendingMeal, setPendingMeal] = useState<MenuItem | null>(null)
   const [pendingMealNote, setPendingMealNote] = useState('')
   const [pendingOrderRemoval, setPendingOrderRemoval] = useState<{ date: string; period: MealPeriod } | null>(null)
+  const [isSavingOrder, setIsSavingOrder] = useState(false)
   const [isConfirmingNewWeek, setIsConfirmingNewWeek] = useState(false)
   const [newWeekStart, setNewWeekStart] = useState(addDaysToIsoDate(new Date().toISOString().slice(0, 10), 7))
   const [newWeekSource, setNewWeekSource] = useState('')
@@ -419,9 +436,30 @@ export default function Home() {
     [activeSelectedDay, visibleOfferDays, weeklyOffer.days]
   )
   const selectedDayAlwaysAvailableScopeDate = getAlwaysAvailableScopeDate(selectedOfferDay.date)
+  const departmentMealPeriods = useMemo(() => getDepartmentMealPeriods(loggedInUser), [loggedInUser])
+  const availableMealPeriods = useMemo(
+    () => getAvailableMealPeriods(selectedOfferDay.date, loggedInUser),
+    [loggedInUser, selectedOfferDay.date]
+  )
   const activeMealPeriod =
-    isSaturday(selectedOfferDay.date) ? defaultMealPeriod : selectedMealPeriod ?? defaultMealPeriod
-  const availableMealPeriods = isSaturday(selectedOfferDay.date) ? [defaultMealPeriod] : mealPeriods
+    selectedMealPeriod && availableMealPeriods.includes(selectedMealPeriod) ? selectedMealPeriod : defaultMealPeriod
+  const shouldChooseMealPeriod =
+    loggedInUser?.role === 'employee' && departmentMealPeriods.length > 1 && !selectedMealPeriod
+
+  useEffect(() => {
+    if (!loggedInUser || loggedInUser.role !== 'employee') {
+      return
+    }
+
+    if (!departmentMealPeriods.includes(selectedMealPeriod ?? defaultMealPeriod)) {
+      setSelectedMealPeriod(defaultMealPeriod)
+      return
+    }
+
+    if (!selectedMealPeriod && departmentMealPeriods.length === 1) {
+      setSelectedMealPeriod(departmentMealPeriods[0])
+    }
+  }, [departmentMealPeriods, loggedInUser, selectedMealPeriod])
 
   const mergedItems = useMemo(
     () => [
@@ -814,7 +852,7 @@ export default function Home() {
   }
 
   const placeOrder = async (itemId: string) => {
-    if (!loggedInUser || loggedInUser.role !== 'employee') return
+    if (!loggedInUser || loggedInUser.role !== 'employee' || isSavingOrder) return
 
     const orderMealPeriod = activeMealPeriod
 
@@ -827,6 +865,8 @@ export default function Home() {
       )
       return
     }
+
+    setIsSavingOrder(true)
 
     try {
       const response = await fetch('/api/orders', {
@@ -846,10 +886,12 @@ export default function Home() {
       if (!response.ok) {
         const data = (await response.json().catch(() => null)) as { error?: string } | null
         setMessage(data?.error ?? 'Shranjevanje naročila v bazo ni uspelo.')
+        setIsSavingOrder(false)
         return
       }
     } catch {
       setMessage('Shranjevanje naročila v bazo ni uspelo.')
+      setIsSavingOrder(false)
       return
     }
 
@@ -874,6 +916,7 @@ export default function Home() {
     )
     setPendingMeal(null)
     setPendingMealNote('')
+    setIsSavingOrder(false)
   }
 
   const removeOrder = async (dayDate: string, mealPeriod: MealPeriod) => {
@@ -1028,10 +1071,49 @@ export default function Home() {
         return
       }
 
+      const translatedTitles = new Map<string, LocalizedText>()
+      const getTranslatedTitle = async (title: string) => {
+        const cachedTitle = translatedTitles.get(title)
+
+        if (cachedTitle) {
+          return cachedTitle
+        }
+
+        const translatedTitle = await translateLocalizedText(title)
+        translatedTitles.set(title, translatedTitle)
+        return translatedTitle
+      }
+
+      type TranslatedImportedDay = {
+        date: string
+        items: Array<{
+          category: MenuCategory
+          title: LocalizedText
+          allergens?: string
+        }>
+      }
+
+      const importedDays = new Map<string, TranslatedImportedDay>(
+        await Promise.all(
+          data.days.map(async (day) => [
+            day.date,
+            {
+              ...day,
+              items: await Promise.all(
+                day.items.map(async (item) => ({
+                  ...item,
+                  title: await getTranslatedTitle(item.title),
+                }))
+              ),
+            },
+          ] as const)
+        )
+      )
+
       const nextOffer: WeeklyOffer = {
         ...weeklyOffer,
         days: weeklyOffer.days.map((day) => {
-          const importedDay = data.days?.find((entry) => entry.date === day.date)
+          const importedDay = importedDays.get(day.date)
 
           if (!importedDay) {
             return day
@@ -1047,7 +1129,7 @@ export default function Home() {
               id: existingItem?.id ?? `${day.date}-${item.category}-morning`,
               category: item.category,
               mealPeriod: 'morning' as const,
-              title: localizedDraftFromSlovenian(item.title),
+              title: item.title,
               allergens: item.allergens,
               description: existingItem?.description,
             } satisfies MenuItem
@@ -1450,7 +1532,7 @@ export default function Home() {
         </section>
 
         <section className={`grid gap-6 ${loggedInUser.role === 'admin' ? '' : 'lg:grid-cols-[0.42fr_0.58fr]'}`}>
-          {!selectedMealPeriod && loggedInUser.role === 'employee' ? (
+          {shouldChooseMealPeriod ? (
             <section className="glass-panel rounded-[2rem] p-5 sm:p-6 lg:col-span-2">
               <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
                 Termin naročanja
@@ -2055,12 +2137,14 @@ export default function Home() {
             noteValue={pendingMealNote}
             onNoteChange={setPendingMealNote}
             cancelLabel={t.cancel}
-            confirmLabel={t.confirm}
+            confirmLabel={isSavingOrder ? 'Shranjujem...' : t.confirm}
             onCancel={() => {
+              if (isSavingOrder) return
               setPendingMeal(null)
               setPendingMealNote('')
             }}
-            onConfirm={() => placeOrder(pendingMeal.id)}
+            onConfirm={() => void placeOrder(pendingMeal.id)}
+            isConfirming={isSavingOrder}
           />
         ) : null}
         {pendingOrderRemoval ? (
@@ -2351,6 +2435,7 @@ function ConfirmModal({
   onNoteChange,
   cancelLabel,
   confirmLabel,
+  isConfirming = false,
   onCancel,
   onConfirm,
 }: {
@@ -2362,6 +2447,7 @@ function ConfirmModal({
   onNoteChange?: (value: string) => void
   cancelLabel: string
   confirmLabel: string
+  isConfirming?: boolean
   onCancel: () => void
   onConfirm: () => void
 }) {
@@ -2383,10 +2469,18 @@ function ConfirmModal({
           </label>
         ) : null}
         <div className="mt-6 flex gap-3">
-          <button onClick={onCancel} className="flex-1 rounded-2xl border border-[var(--line)] bg-white px-4 py-3 font-semibold">
+          <button
+            onClick={onCancel}
+            disabled={isConfirming}
+            className="flex-1 rounded-2xl border border-[var(--line)] bg-white px-4 py-3 font-semibold disabled:cursor-not-allowed"
+          >
             {cancelLabel}
           </button>
-          <button onClick={onConfirm} className="flex-1 rounded-2xl bg-[var(--accent)] px-4 py-3 font-semibold text-white">
+          <button
+            onClick={onConfirm}
+            disabled={isConfirming}
+            className="flex-1 rounded-2xl bg-[var(--accent)] px-4 py-3 font-semibold text-white disabled:cursor-wait disabled:bg-[var(--accent-strong)]"
+          >
             {confirmLabel}
           </button>
         </div>

@@ -6,6 +6,20 @@ function isMealPeriod(value: unknown): value is MealPeriod {
   return value === 'morning' || value === 'afternoon'
 }
 
+function normalizeDepartmentName(department: string | null | undefined) {
+  const normalized = (department ?? '').trim().toLowerCase()
+
+  if (normalized === 'delavnica') {
+    return 'Delavnica'
+  }
+
+  if (normalized === 'pisarne' || normalized === 'pisarna') {
+    return 'Pisarne'
+  }
+
+  return normalized || 'Ostalo'
+}
+
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
@@ -21,6 +35,24 @@ export async function POST(request: Request) {
     }
 
     const supabase = getSupabaseServerClient()
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id,department,role')
+      .eq('id', body.userId)
+      .maybeSingle()
+
+    if (userError) {
+      throw userError
+    }
+
+    if (!user) {
+      return NextResponse.json({ error: 'Uporabnik ne obstaja vec.' }, { status: 400 })
+    }
+
+    if (body.mealPeriod === 'afternoon' && user.role !== 'admin' && normalizeDepartmentName(user.department) !== 'Delavnica') {
+      return NextResponse.json({ error: 'Popoldanska malica je na voljo samo za oddelek Delavnica.' }, { status: 403 })
+    }
+
     const { data: mealItem, error: mealItemError } = await supabase
       .from('meal_items')
       .select('id,meal_period')
