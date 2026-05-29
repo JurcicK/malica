@@ -24,6 +24,7 @@ export type MenuItem = {
   title: LocalizedText
   category: MenuCategory
   mealPeriod: MealPeriod
+  serviceDate?: string
   allergens?: string
   description?: LocalizedText
   isAlwaysAvailable?: boolean

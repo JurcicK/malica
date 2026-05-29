@@ -117,6 +117,7 @@ function mapDbOffer(offer: DbWeeklyOffer, items: DbMealItem[]): WeeklyOffer {
       id: item.id,
       category: item.category,
       mealPeriod: item.meal_period ?? 'morning',
+      serviceDate: item.service_date ?? undefined,
       title: asLocalizedText(item.title),
       description: item.description ? asLocalizedText(item.description) : undefined,
       allergens: item.allergens || undefined,

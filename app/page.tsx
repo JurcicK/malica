@@ -54,6 +54,7 @@ type ParsedWeeklyMenuDay = {
 type AlwaysAvailableDraftItem = {
   id: string
   mealPeriod: MealPeriod
+  serviceDate?: string
   title: LocalizedText
   description: LocalizedText
   allergens: string
@@ -230,6 +231,7 @@ function buildAlwaysAvailableDraft(offer: WeeklyOffer) {
   return offer.alwaysAvailable.map((item): AlwaysAvailableDraftItem => ({
     id: item.id,
     mealPeriod: item.mealPeriod ?? defaultMealPeriod,
+    serviceDate: item.serviceDate,
     title: {
       sl: getLocalizedText(item.title, 'sl'),
       en: getLocalizedText(item.title, 'en'),
@@ -265,6 +267,10 @@ function addDaysToIsoDate(dateString: string, days: number) {
 
 function getMealPeriodLabel(period: MealPeriod, language: Language) {
   return mealPeriodLabels[period][language]
+}
+
+function getAlwaysAvailableScopeDate(dateString: string) {
+  return isSaturday(dateString) ? dateString : undefined
 }
 
 function getWeekKey(offer: WeeklyOffer) {
@@ -412,14 +418,21 @@ export default function Home() {
     () => visibleOfferDays.find((day) => day.date === activeSelectedDay) ?? visibleOfferDays[0] ?? weeklyOffer.days[0],
     [activeSelectedDay, visibleOfferDays, weeklyOffer.days]
   )
-  const activeMealPeriod = selectedMealPeriod ?? defaultMealPeriod
+  const selectedDayAlwaysAvailableScopeDate = getAlwaysAvailableScopeDate(selectedOfferDay.date)
+  const activeMealPeriod =
+    isSaturday(selectedOfferDay.date) ? defaultMealPeriod : selectedMealPeriod ?? defaultMealPeriod
+  const availableMealPeriods = isSaturday(selectedOfferDay.date) ? [defaultMealPeriod] : mealPeriods
 
   const mergedItems = useMemo(
     () => [
       ...selectedOfferDay.items.filter((item) => item.mealPeriod === activeMealPeriod),
-      ...weeklyOffer.alwaysAvailable.filter((item) => item.mealPeriod === activeMealPeriod),
+      ...weeklyOffer.alwaysAvailable.filter(
+        (item) =>
+          item.mealPeriod === activeMealPeriod &&
+          (item.serviceDate ?? undefined) === selectedDayAlwaysAvailableScopeDate
+      ),
     ],
-    [activeMealPeriod, selectedOfferDay, weeklyOffer.alwaysAvailable]
+    [activeMealPeriod, selectedDayAlwaysAvailableScopeDate, selectedOfferDay, weeklyOffer.alwaysAvailable]
   )
 
   const selectedOrder = loggedInUser ? orders[activeSelectedDay]?.[loggedInUser.id]?.[activeMealPeriod] : undefined
@@ -1116,8 +1129,12 @@ export default function Home() {
   }
 
   const saveAlwaysAvailable = async () => {
+    const scopeDate = selectedDayAlwaysAvailableScopeDate
     const nonEmptyItems = alwaysAvailableDraft.filter(
-      (item) => item.mealPeriod === activeMealPeriod && item.title.sl.trim()
+      (item) =>
+        item.mealPeriod === activeMealPeriod &&
+        (item.serviceDate ?? undefined) === scopeDate &&
+        item.title.sl.trim()
     )
 
     if (nonEmptyItems.length === 0) {
@@ -1134,6 +1151,7 @@ export default function Home() {
         id: existingItem?.id ?? item.id,
         category: 'stalna ponudba' as const,
         mealPeriod: activeMealPeriod,
+        serviceDate: scopeDate,
         title: item.title,
         description: item.description.sl.trim() ? item.description : undefined,
         allergens: item.allergens.trim() || undefined,
@@ -1144,7 +1162,9 @@ export default function Home() {
     const nextOffer = {
       ...weeklyOffer,
       alwaysAvailable: [
-        ...weeklyOffer.alwaysAvailable.filter((item) => item.mealPeriod !== activeMealPeriod),
+        ...weeklyOffer.alwaysAvailable.filter(
+          (item) => item.mealPeriod !== activeMealPeriod || (item.serviceDate ?? undefined) !== scopeDate
+        ),
         ...alwaysAvailable,
       ],
     }
@@ -1257,6 +1277,7 @@ export default function Home() {
       {
         id: `always-draft-${Date.now()}`,
         mealPeriod: activeMealPeriod,
+        serviceDate: selectedDayAlwaysAvailableScopeDate,
         title: emptyLocalizedText(),
         description: emptyLocalizedText(),
         allergens: '',
@@ -1453,7 +1474,7 @@ export default function Home() {
                     <option value="" disabled>
                       Izberi dopoldansko ali popoldansko malico
                     </option>
-                    {mealPeriods.map((period) => (
+                    {availableMealPeriods.map((period) => (
                       <option key={period} value={period}>
                         {getMealPeriodLabel(period, language)}
                       </option>
@@ -1559,7 +1580,7 @@ export default function Home() {
                         onChange={(event) => setSelectedMealPeriod(event.target.value as MealPeriod)}
                         className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
                       >
-                        {mealPeriods.map((period) => (
+                        {availableMealPeriods.map((period) => (
                           <option key={period} value={period}>
                             {getMealPeriodLabel(period, language)}
                           </option>
@@ -1902,7 +1923,7 @@ export default function Home() {
                       onChange={(event) => setSelectedMealPeriod(event.target.value as MealPeriod)}
                       className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
                     >
-                      {mealPeriods.map((period) => (
+                      {availableMealPeriods.map((period) => (
                         <option key={period} value={period}>
                           {getMealPeriodLabel(period, language)}
                         </option>
@@ -1920,13 +1941,22 @@ export default function Home() {
                 </p>
                 <h3 className="mt-1 font-[var(--font-display)] text-2xl font-bold">
                   {t.manualEntry} - {getMealPeriodLabel(activeMealPeriod, language)}
+                  {selectedDayAlwaysAvailableScopeDate
+                    ? ` - ${getLocalizedText(selectedOfferDay.label, language)}`
+                    : ''}
                 </h3>
                 <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-                  Ločeno upravljanje stalne ponudbe za izbran termin. Te jedi so vedno prikazane uporabnikom znotraj tega termina.
+                  {selectedDayAlwaysAvailableScopeDate
+                    ? 'Ločeno upravljanje sobotne stalne ponudbe. Te jedi so prikazane samo za izbrano soboto.'
+                    : 'Ločeno upravljanje stalne ponudbe za izbran termin. Te jedi so vedno prikazane uporabnikom znotraj tega termina.'}
                 </p>
                 <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {alwaysAvailableDraft
-                    .filter((item) => item.mealPeriod === activeMealPeriod)
+                    .filter(
+                      (item) =>
+                        item.mealPeriod === activeMealPeriod &&
+                        (item.serviceDate ?? undefined) === selectedDayAlwaysAvailableScopeDate
+                    )
                     .map((item) => (
                     <div key={item.id} className="rounded-[1.1rem] border border-[var(--line)] bg-white/75 p-4">
                       {item.isEditing ? (

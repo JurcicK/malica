@@ -186,12 +186,14 @@ function findHeaderRow(values: Map<string, string>) {
 
 function findDayRow(values: Map<string, string>, dayName: string) {
   for (let row = 1; row <= 60; row += 1) {
-    if (findCellValue(values, `A${row}`) === dayName) {
+    const cellValue = findCellValue(values, `A${row}`)
+
+    if (cellValue === dayName || cellValue.includes(dayName)) {
       return row
     }
   }
 
-  throw new Error(`Day ${dayName} not found.`)
+  return undefined
 }
 
 export async function POST(request: Request) {
@@ -215,10 +217,10 @@ export async function POST(request: Request) {
 
     const values = parseSheetValues(sheetXml.toString('utf8'), sharedStrings)
     const dates = parseDateRange(values.get('A3') ?? '', file.name, Array.from(values.values()).join(' '))
-    const { categories } = findHeaderRow(values)
+    const { row: headerRow, categories } = findHeaderRow(values)
 
     const days: ParsedDay[] = dayNames.map((dayName, dayIndex) => {
-      const row = findDayRow(values, dayName)
+      const row = findDayRow(values, dayName) ?? headerRow + 1 + dayIndex
 
       const items: ParsedMeal[] = []
 
