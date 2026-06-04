@@ -24,6 +24,8 @@ type DbWeeklyOffer = {
   week_label: LocalizedText | string | null
   source_label: LocalizedText | string | null
   cutoff_hour: number
+  cutoff_minute: number | null
+  cutoff_overrides: WeeklyOffer['cutoffOverrides'] | null
   starts_on: string
   ends_on: string
   is_active: boolean
@@ -129,6 +131,8 @@ function mapDbOffer(offer: DbWeeklyOffer, items: DbMealItem[]): WeeklyOffer {
     weekLabel: asLocalizedText(offer.week_label || defaultWeeklyOffer.weekLabel),
     sourceLabel: asLocalizedText(offer.source_label || defaultWeeklyOffer.sourceLabel),
     cutoffHour: offer.cutoff_hour,
+    cutoffMinute: offer.cutoff_minute ?? 0,
+    cutoffOverrides: offer.cutoff_overrides ?? {},
     alwaysAvailable,
     days: weekDates.map((date) => ({
       date,

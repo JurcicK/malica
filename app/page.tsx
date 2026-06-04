@@ -6,6 +6,7 @@ import {
   defaultOrders,
   defaultWeeklyOffer,
   demoUsers,
+  type CutoffTime,
   type MealPeriod,
   type MenuCategory,
   type MenuItem,
@@ -76,16 +77,17 @@ function formatDate(dateString: string, language: Language) {
   }).format(new Date(`${dateString}T12:00:00`))
 }
 
-type CutoffTime = {
-  hour: number
-  minute: number
-}
-
 function getWeekday(dateString: string) {
   return new Date(`${dateString}T12:00:00`).getDay()
 }
 
-function getCutoffTimeForDay(dateString: string, mealPeriod: MealPeriod, defaultCutoffHour: number): CutoffTime {
+function getCutoffTimeForDay(dateString: string, mealPeriod: MealPeriod, offer: WeeklyOffer): CutoffTime {
+  const override = offer.cutoffOverrides?.[dateString]?.[mealPeriod]
+
+  if (override) {
+    return override
+  }
+
   const weekday = getWeekday(dateString)
 
   if (weekday === 6) {
@@ -96,11 +98,28 @@ function getCutoffTimeForDay(dateString: string, mealPeriod: MealPeriod, default
     return { hour: 15, minute: 30 }
   }
 
-  return { hour: defaultCutoffHour, minute: 0 }
+  return { hour: offer.cutoffHour, minute: offer.cutoffMinute ?? 0 }
 }
 
 function formatCutoffTime(cutoff: CutoffTime) {
   return `${String(cutoff.hour).padStart(2, '0')}:${String(cutoff.minute).padStart(2, '0')}`
+}
+
+function parseCutoffTime(value: string): CutoffTime | null {
+  const match = /^(\d{2}):(\d{2})$/.exec(value)
+
+  if (!match) {
+    return null
+  }
+
+  const hour = Number(match[1])
+  const minute = Number(match[2])
+
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return null
+  }
+
+  return { hour, minute }
 }
 
 function isLocked(dateString: string, cutoff: CutoffTime, now: Date) {
@@ -164,7 +183,7 @@ function getInitialSelectedDay(offer: WeeklyOffer) {
   return (
     offer.days.find((day) => day.date === todayIso)?.date ??
     offer.days.find((day) =>
-      !isLocked(day.date, getCutoffTimeForDay(day.date, defaultMealPeriod, offer.cutoffHour), today)
+      !isLocked(day.date, getCutoffTimeForDay(day.date, defaultMealPeriod, offer), today)
     )?.date ??
     offer.days[0].date
   )
@@ -187,11 +206,44 @@ function normalizeLocalizedValue(value: string | Partial<LocalizedText> | undefi
   return { sl, en, uk, bs }
 }
 
+function normalizeCutoffOverrides(value: WeeklyOffer['cutoffOverrides'] | undefined): WeeklyOffer['cutoffOverrides'] {
+  if (!value) {
+    return {}
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([date, periods]) => [
+      date,
+      Object.fromEntries(
+        Object.entries(periods)
+          .map(([period, cutoff]) => {
+            if (
+              (period !== 'morning' && period !== 'afternoon') ||
+              !cutoff ||
+              cutoff.hour < 0 ||
+              cutoff.hour > 23 ||
+              cutoff.minute < 0 ||
+              cutoff.minute > 59
+            ) {
+              return null
+            }
+
+            return [period, { hour: cutoff.hour, minute: cutoff.minute }] as const
+          })
+          .filter((entry): entry is readonly [MealPeriod, CutoffTime] => entry !== null)
+      ),
+    ])
+  )
+}
+
 function normalizeWeeklyOffer(offer: WeeklyOffer): WeeklyOffer {
   return {
     ...offer,
     weekLabel: normalizeLocalizedValue(offer.weekLabel) ?? defaultWeeklyOffer.weekLabel,
     sourceLabel: normalizeLocalizedValue(offer.sourceLabel) ?? defaultWeeklyOffer.sourceLabel,
+    cutoffHour: offer.cutoffHour ?? defaultWeeklyOffer.cutoffHour,
+    cutoffMinute: offer.cutoffMinute ?? defaultWeeklyOffer.cutoffMinute,
+    cutoffOverrides: normalizeCutoffOverrides(offer.cutoffOverrides),
     days: offer.days.map((day, index) => ({
       ...day,
       label:
@@ -475,7 +527,9 @@ export default function Home() {
 
   const selectedOrder = loggedInUser ? orders[activeSelectedDay]?.[loggedInUser.id]?.[activeMealPeriod] : undefined
   const selectedOrderId = selectedOrder?.mealItemId
-  const selectedDayCutoff = getCutoffTimeForDay(selectedOfferDay.date, activeMealPeriod, weeklyOffer.cutoffHour)
+  const selectedDayCutoff = getCutoffTimeForDay(selectedOfferDay.date, activeMealPeriod, weeklyOffer)
+  const selectedDayCutoffOverride = weeklyOffer.cutoffOverrides[selectedOfferDay.date]?.[activeMealPeriod]
+  const defaultCutoffTime = { hour: weeklyOffer.cutoffHour, minute: weeklyOffer.cutoffMinute ?? 0 }
   const isSelectedDayLocked = isLocked(selectedOfferDay.date, selectedDayCutoff, now)
   const adminBreakdown = mergedItems
     .map((item) => {
@@ -928,7 +982,7 @@ export default function Home() {
       return
     }
 
-    const dayCutoff = getCutoffTimeForDay(dayDate, mealPeriod, weeklyOffer.cutoffHour)
+    const dayCutoff = getCutoffTimeForDay(dayDate, mealPeriod, weeklyOffer)
 
     if (isLocked(dayDate, dayCutoff, now)) {
       setMessage(
@@ -994,6 +1048,8 @@ export default function Home() {
           action: 'createWeek',
           startsOn: newWeekStart,
           cutoffHour: weeklyOffer.cutoffHour,
+          cutoffMinute: weeklyOffer.cutoffMinute,
+          cutoffOverrides: {},
           copyAlwaysAvailable: copyAlwaysAvailableToNewWeek,
           sourceLabel: newWeekSource.trim()
             ? localizedDraftFromSlovenian(newWeekSource)
@@ -1154,6 +1210,70 @@ export default function Home() {
     }
   }
 
+  const updateDefaultCutoffTime = (value: string) => {
+    const cutoff = parseCutoffTime(value)
+
+    if (!cutoff) {
+      return
+    }
+
+    setWeeklyOffer((current) => ({
+      ...current,
+      cutoffHour: cutoff.hour,
+      cutoffMinute: cutoff.minute,
+    }))
+  }
+
+  const updateSelectedDayCutoffOverride = (value: string) => {
+    const cutoff = parseCutoffTime(value)
+
+    if (!cutoff) {
+      return
+    }
+
+    setWeeklyOffer((current) => ({
+      ...current,
+      cutoffOverrides: {
+        ...current.cutoffOverrides,
+        [selectedOfferDay.date]: {
+          ...(current.cutoffOverrides[selectedOfferDay.date] ?? {}),
+          [activeMealPeriod]: cutoff,
+        },
+      },
+    }))
+  }
+
+  const removeSelectedDayCutoffOverride = () => {
+    setWeeklyOffer((current) => {
+      const currentDayOverrides = current.cutoffOverrides[selectedOfferDay.date]
+
+      if (!currentDayOverrides?.[activeMealPeriod]) {
+        return current
+      }
+
+      const nextDayOverrides = { ...currentDayOverrides }
+      delete nextDayOverrides[activeMealPeriod]
+
+      const nextOverrides = { ...current.cutoffOverrides }
+
+      if (Object.keys(nextDayOverrides).length > 0) {
+        nextOverrides[selectedOfferDay.date] = nextDayOverrides
+      } else {
+        delete nextOverrides[selectedOfferDay.date]
+      }
+
+      return {
+        ...current,
+        cutoffOverrides: nextOverrides,
+      }
+    })
+  }
+
+  const saveCutoffSettings = async () => {
+    setIsSavingOffer(true)
+    await saveOfferToSupabase(weeklyOffer, 'Roki prijave so shranjeni.')
+  }
+
   const saveWeeklyOffer = async () => {
     const hasAnyMeal = Object.values(weeklyDraft[activeMealPeriod]).some((dayDraft) =>
       weeklyCategories.some((category) => dayDraft[category]?.sl?.trim())
@@ -1254,7 +1374,7 @@ export default function Home() {
     await saveOfferToSupabase(nextOffer)
   }
 
-  const saveOfferToSupabase = async (nextOffer: WeeklyOffer) => {
+  const saveOfferToSupabase = async (nextOffer: WeeklyOffer, successMessage = t.mealAdded) => {
     try {
       const response = await fetch('/api/weekly-offer', {
         method: 'POST',
@@ -1294,7 +1414,7 @@ export default function Home() {
       setAlwaysAvailableDraft(buildAlwaysAvailableDraft(savedOffer))
       setOrders(savedOrders)
       setEditingCells({})
-      setMessage(t.mealAdded)
+      setMessage(successMessage)
       setIsSavingOffer(false)
     } catch {
       setMessage('Shranjevanje ponudbe v Supabase ni uspelo.')
@@ -1573,7 +1693,7 @@ export default function Home() {
             </p>
             <div className={`mt-4 ${loggedInUser.role === 'admin' ? 'grid gap-3 sm:grid-cols-2 lg:grid-cols-5' : 'space-y-3'}`}>
               {visibleOfferDays.map((day) => {
-                const dayCutoff = getCutoffTimeForDay(day.date, activeMealPeriod, weeklyOffer.cutoffHour)
+                const dayCutoff = getCutoffTimeForDay(day.date, activeMealPeriod, weeklyOffer)
                 const locked = isLocked(day.date, dayCutoff, now)
                 const dayOrders = getPeriodOrders(orders, day.date, activeMealPeriod).length
                 const userOrder = loggedInUser ? orders[day.date]?.[loggedInUser.id]?.[activeMealPeriod] : undefined
@@ -2012,6 +2132,86 @@ export default function Home() {
                       ))}
                     </select>
                   </label>
+                </div>
+              </section>
+            ) : null}
+
+            {loggedInUser.role === 'admin' ? (
+              <section className="glass-panel rounded-[1.5rem] p-4 sm:p-5">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
+                      Roki prijave
+                    </p>
+                    <h3 className="mt-1 font-[var(--font-display)] text-2xl font-bold">
+                      {getLocalizedText(selectedOfferDay.label, language)} - {getMealPeriodLabel(activeMealPeriod, language)}
+                    </h3>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+                      Splošni rok velja za dneve brez izjeme. Izjema spodaj velja samo za trenutno izbran dan in termin.
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm font-semibold text-orange-900">
+                    Trenutno velja: {formatCutoffTime(selectedDayCutoff)}
+                  </div>
+                </div>
+
+                <div className="mt-5 grid gap-4 md:grid-cols-2">
+                  <label className="block rounded-[1rem] border border-[var(--line)] bg-white/70 p-4">
+                    <span className="block text-sm font-semibold text-[var(--foreground)]">
+                      Splošni rok za teden
+                    </span>
+                    <span className="mt-1 block text-sm leading-6 text-[var(--muted)]">
+                      Uporabi se za vse dni in termine, ki nimajo svoje izjeme.
+                    </span>
+                    <input
+                      type="time"
+                      value={formatCutoffTime(defaultCutoffTime)}
+                      onChange={(event) => updateDefaultCutoffTime(event.target.value)}
+                      className="mt-3 w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-base font-semibold outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                    />
+                  </label>
+
+                  <div className="rounded-[1rem] border border-[var(--line)] bg-white/70 p-4">
+                    <label className="block">
+                      <span className="block text-sm font-semibold text-[var(--foreground)]">
+                        Izjema za izbran dan
+                      </span>
+                      <span className="mt-1 block text-sm leading-6 text-[var(--muted)]">
+                        Nastavi, če želiš ta dan odpreti dlje ali ga zapreti prej.
+                      </span>
+                      <input
+                        type="time"
+                        value={formatCutoffTime(selectedDayCutoff)}
+                        onChange={(event) => updateSelectedDayCutoffOverride(event.target.value)}
+                        className="mt-3 w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-base font-semibold outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                      />
+                    </label>
+                    <div className="mt-3 flex flex-wrap items-center gap-3">
+                      <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">
+                        {selectedDayCutoffOverride ? 'Ročna izjema' : 'Brez ročne izjeme'}
+                      </span>
+                      {selectedDayCutoffOverride ? (
+                        <button
+                          type="button"
+                          onClick={removeSelectedDayCutoffOverride}
+                          className="rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm font-semibold transition hover:bg-orange-50"
+                        >
+                          Odstrani izjemo
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-5 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={saveCutoffSettings}
+                    disabled={isSavingOffer}
+                    className="rounded-2xl bg-[var(--accent)] px-5 py-3 font-semibold text-white transition hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-stone-300"
+                  >
+                    {isSavingOffer ? 'Shranjujem...' : 'Shrani roke prijave'}
+                  </button>
                 </div>
               </section>
             ) : null}

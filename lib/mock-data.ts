@@ -3,6 +3,13 @@ import { autoTranslateText, type LocalizedText } from './meal-localization'
 export type UserRole = 'admin' | 'employee'
 export type MealPeriod = 'morning' | 'afternoon'
 
+export type CutoffTime = {
+  hour: number
+  minute: number
+}
+
+export type CutoffOverrides = Record<string, Partial<Record<MealPeriod, CutoffTime>>>
+
 export type UserProfile = {
   id: string
   fullName: string
@@ -41,6 +48,8 @@ export type WeeklyOffer = {
   weekLabel: LocalizedText
   sourceLabel: LocalizedText
   cutoffHour: number
+  cutoffMinute: number
+  cutoffOverrides: CutoffOverrides
   days: DayOffer[]
   alwaysAvailable: MenuItem[]
 }
@@ -78,6 +87,8 @@ export const defaultWeeklyOffer: WeeklyOffer = {
     'Uvezeno iz Excel ponude 30.3-4.4.2026'
   ),
   cutoffHour: 10,
+  cutoffMinute: 0,
+  cutoffOverrides: {},
   days: [
     {
       date: '2026-03-30',

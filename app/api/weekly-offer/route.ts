@@ -25,6 +25,8 @@ export async function POST(request: Request) {
       sourceLabel?: { sl: string; en: string; uk: string; bs: string }
       copyAlwaysAvailable?: boolean
       cutoffHour?: number
+      cutoffMinute?: number
+      cutoffOverrides?: WeeklyOffer['cutoffOverrides']
     }
 
     if (body.action === 'createWeek') {
@@ -36,6 +38,7 @@ export async function POST(request: Request) {
       const startsOn = body.startsOn
       const endsOn = addDays(startsOn, 5)
       const cutoffHour = body.cutoffHour ?? 10
+      const cutoffMinute = body.cutoffMinute ?? 0
 
       const weekLabel = {
         sl: `Tedenska ponudba ${startsOn} - ${endsOn}`,
@@ -101,6 +104,8 @@ export async function POST(request: Request) {
           week_label: weekLabel,
           source_label: sourceLabel,
           cutoff_hour: cutoffHour,
+          cutoff_minute: cutoffMinute,
+          cutoff_overrides: body.cutoffOverrides ?? {},
           starts_on: startsOn,
           ends_on: endsOn,
           is_active: true,
@@ -173,6 +178,8 @@ export async function POST(request: Request) {
           week_label: weeklyOffer.weekLabel,
           source_label: weeklyOffer.sourceLabel,
           cutoff_hour: weeklyOffer.cutoffHour,
+          cutoff_minute: weeklyOffer.cutoffMinute,
+          cutoff_overrides: weeklyOffer.cutoffOverrides,
           starts_on: startsOn,
           ends_on: endsOn,
           is_active: true,
@@ -189,6 +196,8 @@ export async function POST(request: Request) {
           week_label: weeklyOffer.weekLabel,
           source_label: weeklyOffer.sourceLabel,
           cutoff_hour: weeklyOffer.cutoffHour,
+          cutoff_minute: weeklyOffer.cutoffMinute,
+          cutoff_overrides: weeklyOffer.cutoffOverrides,
           starts_on: startsOn,
           ends_on: endsOn,
           is_active: true,

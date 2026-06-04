@@ -16,6 +16,8 @@ create table if not exists public.weekly_offers (
   week_label jsonb not null,
   source_label jsonb not null,
   cutoff_hour integer not null default 10,
+  cutoff_minute integer not null default 0 check (cutoff_minute >= 0 and cutoff_minute <= 59),
+  cutoff_overrides jsonb not null default '{}'::jsonb,
   starts_on date not null,
   ends_on date not null,
   is_active boolean not null default false,
