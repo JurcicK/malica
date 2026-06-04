@@ -24,6 +24,8 @@ import { formatTranslation, translations, type Language } from '../lib/translati
 const weeklyCategories: MenuCategory[] = ['bodi fit', 'vege', 'ali pa..', 'na hitro...']
 const mealPeriods: MealPeriod[] = ['morning', 'afternoon']
 const defaultMealPeriod: MealPeriod = 'morning'
+const adminIdleLogoutMs = 30 * 60 * 1000
+const adminIdleWarningMs = 2 * 60 * 1000
 const mealPeriodLabels: Record<MealPeriod, { sl: string; en: string; uk: string; bs: string }> = {
   morning: {
     sl: 'Dopoldanska malica',
@@ -244,6 +246,7 @@ function normalizeWeeklyOffer(offer: WeeklyOffer): WeeklyOffer {
     cutoffHour: offer.cutoffHour ?? defaultWeeklyOffer.cutoffHour,
     cutoffMinute: offer.cutoffMinute ?? defaultWeeklyOffer.cutoffMinute,
     cutoffOverrides: normalizeCutoffOverrides(offer.cutoffOverrides),
+    editVersions: offer.editVersions ?? {},
     days: offer.days.map((day, index) => ({
       ...day,
       label:
@@ -369,6 +372,23 @@ function getPeriodOrders(orders: OrdersByDay, date: string, period: MealPeriod) 
     )
 }
 
+function getEditScopeKey(
+  editScope:
+    | { kind: 'weekly'; mealPeriod: MealPeriod; serviceDates: string[] }
+    | { kind: 'always'; mealPeriod: MealPeriod; serviceDate?: string }
+    | undefined
+) {
+  if (!editScope) {
+    return null
+  }
+
+  if (editScope.kind === 'weekly') {
+    return `weekly:${editScope.mealPeriod}`
+  }
+
+  return `always:${editScope.serviceDate ?? 'global'}:${editScope.mealPeriod}`
+}
+
 function escapeHtml(value: string) {
   return value
     .replaceAll('&', '&amp;')
@@ -409,6 +429,8 @@ export default function Home() {
   const [isSavingOffer, setIsSavingOffer] = useState(false)
   const [isImportingWeeklyMenu, setIsImportingWeeklyMenu] = useState(false)
   const [printDepartment, setPrintDepartment] = useState<PrintDepartment>('Pisarne')
+  const [lastAdminActivityAt, setLastAdminActivityAt] = useState(() => Date.now())
+  const [adminIdleSecondsLeft, setAdminIdleSecondsLeft] = useState<number | null>(null)
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -441,6 +463,56 @@ export default function Home() {
       window.localStorage.setItem('malica:selectedMealPeriod', selectedMealPeriod)
     }
   }, [selectedMealPeriod])
+
+  useEffect(() => {
+    if (loggedInUser?.role !== 'admin') {
+      setAdminIdleSecondsLeft(null)
+      return
+    }
+
+    const markActivity = () => {
+      setLastAdminActivityAt(Date.now())
+      setAdminIdleSecondsLeft(null)
+    }
+    const activityEvents = ['pointerdown', 'keydown', 'touchstart', 'scroll']
+
+    markActivity()
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, markActivity, { passive: true }))
+
+    return () => {
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, markActivity))
+    }
+  }, [loggedInUser])
+
+  useEffect(() => {
+    if (loggedInUser?.role !== 'admin') {
+      return
+    }
+
+    const timer = window.setInterval(() => {
+      const idleMs = Date.now() - lastAdminActivityAt
+      const remainingMs = adminIdleLogoutMs - idleMs
+
+      if (remainingMs <= 0) {
+        setLoggedInUser(null)
+        setUsername('')
+        setPassword('')
+        setPendingMeal(null)
+        setPendingMealNote('')
+        setPendingOrderRemoval(null)
+        setIsConfirmingNewWeek(false)
+        setAdminIdleSecondsLeft(null)
+        setMessage('Admin seja je potekla zaradi neaktivnosti. Prijavi se ponovno.')
+        return
+      }
+
+      setAdminIdleSecondsLeft(
+        remainingMs <= adminIdleWarningMs ? Math.ceil(remainingMs / 1000) : null
+      )
+    }, 1000)
+
+    return () => window.clearInterval(timer)
+  }, [lastAdminActivityAt, loggedInUser])
 
   const t = translations[language]
   type AdminOrderPerson = { user: UserProfile; note: string | undefined }
@@ -898,6 +970,7 @@ export default function Home() {
     setLoggedInUser(null)
     setUsername('')
     setPassword('')
+    setAdminIdleSecondsLeft(null)
     setMessage('')
   }
 
@@ -1050,6 +1123,7 @@ export default function Home() {
           cutoffHour: weeklyOffer.cutoffHour,
           cutoffMinute: weeklyOffer.cutoffMinute,
           cutoffOverrides: {},
+          actorUserId: loggedInUser?.id,
           copyAlwaysAvailable: copyAlwaysAvailableToNewWeek,
           sourceLabel: newWeekSource.trim()
             ? localizedDraftFromSlovenian(newWeekSource)
@@ -1202,6 +1276,13 @@ export default function Home() {
       setWeeklyOffer(nextOffer)
       setWeeklyDraft(buildWeeklyDraft(nextOffer))
       setAlwaysAvailableDraft(buildAlwaysAvailableDraft(nextOffer))
+      if (loggedInUser?.role === 'admin') {
+        void writeDraftAuditLog('excel_import_morning_menu', {
+          weekKey: getWeekKey(nextOffer),
+          importedDays: data.days.map((day) => day.date),
+          itemCount: data.days.reduce((sum, day) => sum + day.items.length, 0),
+        })
+      }
       setMessage('Excel ponudba je uvožena v dopoldansko ponudbo. Preglej in klikni Dodaj v ponudbo.')
     } catch {
       setMessage('Branje Excel ponudbe ni uspelo.')
@@ -1271,7 +1352,50 @@ export default function Home() {
 
   const saveCutoffSettings = async () => {
     setIsSavingOffer(true)
-    await saveOfferToSupabase(weeklyOffer, 'Roki prijave so shranjeni.')
+
+    try {
+      const response = await fetch('/api/weekly-offer', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'saveCutoffs',
+          weeklyOffer,
+          actorUserId: loggedInUser?.id,
+        }),
+      })
+
+      if (!response.ok) {
+        setMessage('Shranjevanje rokov prijave ni uspelo.')
+        setIsSavingOffer(false)
+        return
+      }
+
+      const data = (await response.json()) as {
+        weeklyOffer?: WeeklyOffer
+        weeklyOffers?: WeeklyOffer[]
+        orders?: OrdersByDay
+      }
+
+      const nextOffers = data.weeklyOffers?.length
+        ? data.weeklyOffers.map(normalizeWeeklyOffer)
+        : weeklyOffers.map((offer) => (getWeekKey(offer) === getWeekKey(weeklyOffer) ? weeklyOffer : offer))
+      const savedOffer =
+        nextOffers.find((offer) => getWeekKey(offer) === getWeekKey(weeklyOffer)) ??
+        data.weeklyOffer ??
+        weeklyOffer
+
+      setWeeklyOffers(nextOffers)
+      setWeeklyOffer(savedOffer)
+      setSelectedWeekKey(getWeekKey(savedOffer))
+      setOrders(data.orders ?? orders)
+      setMessage('Roki prijave so shranjeni.')
+      setIsSavingOffer(false)
+    } catch {
+      setMessage('Shranjevanje rokov prijave ni uspelo.')
+      setIsSavingOffer(false)
+    }
   }
 
   const saveWeeklyOffer = async () => {
@@ -1327,7 +1451,11 @@ export default function Home() {
       alwaysAvailable: weeklyOffer.alwaysAvailable,
     }
 
-    await saveOfferToSupabase(nextOffer)
+    await saveOfferToSupabase(nextOffer, t.mealAdded, {
+      kind: 'weekly',
+      mealPeriod: activeMealPeriod,
+      serviceDates: weeklyOffer.days.map((day) => day.date),
+    })
   }
 
   const saveAlwaysAvailable = async () => {
@@ -1371,11 +1499,28 @@ export default function Home() {
       ],
     }
 
-    await saveOfferToSupabase(nextOffer)
+    await saveOfferToSupabase(nextOffer, t.mealAdded, {
+      kind: 'always',
+      mealPeriod: activeMealPeriod,
+      serviceDate: scopeDate,
+    })
   }
 
-  const saveOfferToSupabase = async (nextOffer: WeeklyOffer, successMessage = t.mealAdded) => {
+  const saveOfferToSupabase = async (
+    nextOffer: WeeklyOffer,
+    successMessage = t.mealAdded,
+    editScope?: {
+      kind: 'weekly'
+      mealPeriod: MealPeriod
+      serviceDates: string[]
+    } | {
+      kind: 'always'
+      mealPeriod: MealPeriod
+      serviceDate?: string
+    }
+  ) => {
     try {
+      const editScopeKey = getEditScopeKey(editScope)
       const response = await fetch('/api/weekly-offer', {
         method: 'POST',
         headers: {
@@ -1383,11 +1528,15 @@ export default function Home() {
         },
         body: JSON.stringify({
           weeklyOffer: nextOffer,
+          editScope,
+          expectedEditVersion: editScopeKey ? weeklyOffer.editVersions[editScopeKey] ?? 0 : undefined,
+          actorUserId: loggedInUser?.id,
         }),
       })
 
       if (!response.ok) {
-        setMessage('Shranjevanje ponudbe v Supabase ni uspelo.')
+        const data = (await response.json().catch(() => null)) as { error?: string } | null
+        setMessage(data?.error ?? 'Shranjevanje ponudbe v Supabase ni uspelo.')
         setIsSavingOffer(false)
         return
       }
@@ -1422,7 +1571,43 @@ export default function Home() {
     }
   }
 
+  const writeDraftAuditLog = async (action: string, metadata: Record<string, unknown>) => {
+    if (!loggedInUser || loggedInUser.role !== 'admin') {
+      return
+    }
+
+    await fetch('/api/audit-log', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        actorUserId: loggedInUser.id,
+        action,
+        metadata,
+      }),
+    }).catch(() => undefined)
+  }
+
   const removeMeal = (itemId: string, date?: string) => {
+    const hasOrders = Object.values(orders).some((dailyOrders) =>
+      Object.values(dailyOrders).some((userOrders) =>
+        Object.values(userOrders).some((order) => order?.mealItemId === itemId)
+      )
+    )
+
+    if (hasOrders) {
+      setMessage('Jedi, na katero je nekdo ze prijavljen, ni mogoce izbrisati.')
+      return
+    }
+
+    void writeDraftAuditLog('remove_meal_draft', {
+      mealItemId: itemId,
+      serviceDate: date ?? null,
+      mealPeriod: activeMealPeriod,
+      selectedDay: activeSelectedDay,
+    })
+
     setWeeklyOffer((current) => ({
       ...current,
       alwaysAvailable: current.alwaysAvailable.filter((item) => item.id !== itemId),
@@ -1650,6 +1835,12 @@ export default function Home() {
             </div>
           </div>
         </section>
+
+        {loggedInUser.role === 'admin' && adminIdleSecondsLeft !== null ? (
+          <div className="rounded-[1.5rem] border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
+            Admin seja bo zaradi neaktivnosti potekla cez {Math.ceil(adminIdleSecondsLeft / 60)} min.
+          </div>
+        ) : null}
 
         <section className={`grid gap-6 ${loggedInUser.role === 'admin' ? '' : 'lg:grid-cols-[0.42fr_0.58fr]'}`}>
           {shouldChooseMealPeriod ? (

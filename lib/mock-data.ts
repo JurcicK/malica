@@ -9,6 +9,7 @@ export type CutoffTime = {
 }
 
 export type CutoffOverrides = Record<string, Partial<Record<MealPeriod, CutoffTime>>>
+export type EditVersions = Record<string, number>
 
 export type UserProfile = {
   id: string
@@ -50,6 +51,7 @@ export type WeeklyOffer = {
   cutoffHour: number
   cutoffMinute: number
   cutoffOverrides: CutoffOverrides
+  editVersions: EditVersions
   days: DayOffer[]
   alwaysAvailable: MenuItem[]
 }
@@ -89,6 +91,7 @@ export const defaultWeeklyOffer: WeeklyOffer = {
   cutoffHour: 10,
   cutoffMinute: 0,
   cutoffOverrides: {},
+  editVersions: {},
   days: [
     {
       date: '2026-03-30',

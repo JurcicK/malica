@@ -4,10 +4,85 @@ import { getLocalizedText } from '../../../lib/meal-localization'
 import { loadAppData } from '../../../lib/supabase-app'
 import { getSupabaseServerClient } from '../../../lib/supabase-server'
 
+type EditScope =
+  | { kind: 'weekly'; mealPeriod: string; serviceDates: string[] }
+  | { kind: 'always'; mealPeriod: string; serviceDate?: string | null }
+
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value
   )
+}
+
+function getItemScope(item: { service_date: string | null; meal_period: string | null; is_always_available: boolean }) {
+  return [
+    item.is_always_available ? 'always' : 'day',
+    item.service_date ?? 'global',
+    item.meal_period ?? 'morning',
+  ].join(':')
+}
+
+function getEditableScopes(editScope: EditScope | undefined, fallbackScopes: Set<string>) {
+  if (!editScope) {
+    return fallbackScopes
+  }
+
+  if (editScope.kind === 'weekly') {
+    return new Set(editScope.serviceDates.map((date) => ['day', date, editScope.mealPeriod].join(':')))
+  }
+
+  return new Set([['always', editScope.serviceDate ?? 'global', editScope.mealPeriod].join(':')])
+}
+
+function getEditScopeKey(editScope: EditScope | undefined) {
+  if (!editScope) {
+    return null
+  }
+
+  if (editScope.kind === 'weekly') {
+    return `weekly:${editScope.mealPeriod}`
+  }
+
+  return `always:${editScope.serviceDate ?? 'global'}:${editScope.mealPeriod}`
+}
+
+async function getActor(supabase: ReturnType<typeof getSupabaseServerClient>, actorUserId: string | undefined) {
+  if (!actorUserId) {
+    return null
+  }
+
+  const { data, error } = await supabase
+    .from('users')
+    .select('id,username,role')
+    .eq('id', actorUserId)
+    .maybeSingle()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+async function writeAppAuditLog(
+  supabase: ReturnType<typeof getSupabaseServerClient>,
+  payload: {
+    actor?: { id: string; username: string; role: string } | null
+    action: string
+    targetTable?: string
+    targetId?: string
+    metadata?: Record<string, unknown>
+  }
+) {
+  await supabase.from('app_audit_log').insert({
+    actor_user_id: payload.actor?.id ?? null,
+    actor_username: payload.actor?.username ?? null,
+    actor_role: payload.actor?.role ?? null,
+    action: payload.action,
+    target_table: payload.targetTable ?? null,
+    target_id: payload.targetId ?? null,
+    metadata: payload.metadata ?? {},
+  })
 }
 
 function addDays(date: string, days: number) {
@@ -19,7 +94,7 @@ function addDays(date: string, days: number) {
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
-      action?: 'save' | 'createWeek'
+      action?: 'save' | 'createWeek' | 'saveCutoffs'
       weeklyOffer?: WeeklyOffer
       startsOn?: string
       sourceLabel?: { sl: string; en: string; uk: string; bs: string }
@@ -27,14 +102,23 @@ export async function POST(request: Request) {
       cutoffHour?: number
       cutoffMinute?: number
       cutoffOverrides?: WeeklyOffer['cutoffOverrides']
+      editScope?: EditScope
+      expectedEditVersion?: number
+      actorUserId?: string
     }
+
+    const supabase = getSupabaseServerClient()
+    const actor = await getActor(supabase, body.actorUserId)
 
     if (body.action === 'createWeek') {
       if (!body.startsOn) {
         return NextResponse.json({ error: 'Missing startsOn.' }, { status: 400 })
       }
 
-      const supabase = getSupabaseServerClient()
+      if (actor?.role !== 'admin') {
+        return NextResponse.json({ error: 'Samo admin lahko ustvari nov teden.' }, { status: 403 })
+      }
+
       const startsOn = body.startsOn
       const endsOn = addDays(startsOn, 5)
       const cutoffHour = body.cutoffHour ?? 10
@@ -106,6 +190,7 @@ export async function POST(request: Request) {
           cutoff_hour: cutoffHour,
           cutoff_minute: cutoffMinute,
           cutoff_overrides: body.cutoffOverrides ?? {},
+          edit_versions: {},
           starts_on: startsOn,
           ends_on: endsOn,
           is_active: true,
@@ -137,6 +222,60 @@ export async function POST(request: Request) {
         }
       }
 
+      await writeAppAuditLog(supabase, {
+        actor,
+        action: 'create_week',
+        targetTable: 'weekly_offers',
+        targetId: insertedOffer.id,
+        metadata: { startsOn, endsOn, copyAlwaysAvailable: Boolean(body.copyAlwaysAvailable) },
+      })
+
+      const appData = await loadAppData()
+
+      return NextResponse.json({
+        ok: true,
+        weeklyOffer: appData.weeklyOffer,
+        weeklyOffers: appData.weeklyOffers,
+        orders: appData.orders,
+      })
+    }
+
+    if (body.action === 'saveCutoffs') {
+      const weeklyOffer = body.weeklyOffer
+
+      if (!weeklyOffer?.id) {
+        return NextResponse.json({ error: 'Missing weekly offer id.' }, { status: 400 })
+      }
+
+      if (actor?.role !== 'admin') {
+        return NextResponse.json({ error: 'Samo admin lahko shrani roke prijave.' }, { status: 403 })
+      }
+
+      const { error: updateCutoffsError } = await supabase
+        .from('weekly_offers')
+        .update({
+          cutoff_hour: weeklyOffer.cutoffHour,
+          cutoff_minute: weeklyOffer.cutoffMinute,
+          cutoff_overrides: weeklyOffer.cutoffOverrides,
+        })
+        .eq('id', weeklyOffer.id)
+
+      if (updateCutoffsError) {
+        throw updateCutoffsError
+      }
+
+      await writeAppAuditLog(supabase, {
+        actor,
+        action: 'save_cutoffs',
+        targetTable: 'weekly_offers',
+        targetId: weeklyOffer.id,
+        metadata: {
+          cutoffHour: weeklyOffer.cutoffHour,
+          cutoffMinute: weeklyOffer.cutoffMinute,
+          cutoffOverrides: weeklyOffer.cutoffOverrides,
+        },
+      })
+
       const appData = await loadAppData()
 
       return NextResponse.json({
@@ -153,7 +292,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Missing weekly offer.' }, { status: 400 })
     }
 
-    const supabase = getSupabaseServerClient()
+    if (actor?.role !== 'admin') {
+      return NextResponse.json({ error: 'Samo admin lahko shrani ponudbo.' }, { status: 403 })
+    }
+
     const startsOn = weeklyOffer.days[0].date
     const endsOn = weeklyOffer.days[weeklyOffer.days.length - 1].date
 
@@ -171,6 +313,41 @@ export async function POST(request: Request) {
       offerId = currentActiveOffer?.id
     }
 
+    const editScopeKey = getEditScopeKey(body.editScope)
+    let nextEditVersions = weeklyOffer.editVersions ?? {}
+
+    if (offerId && editScopeKey) {
+      const { data: currentOfferVersion, error: versionError } = await supabase
+        .from('weekly_offers')
+        .select('edit_versions')
+        .eq('id', offerId)
+        .maybeSingle()
+
+      if (versionError) {
+        throw versionError
+      }
+
+      const currentEditVersions = (currentOfferVersion?.edit_versions ?? {}) as WeeklyOffer['editVersions']
+      const currentEditVersion = currentEditVersions[editScopeKey] ?? 0
+      const expectedEditVersion = body.expectedEditVersion ?? 0
+
+      if (currentEditVersion !== expectedEditVersion) {
+        return NextResponse.json(
+          {
+            error:
+              'Ponudba se je medtem spremenila v drugem admin pogledu. Osvezi stran in ponovno preveri spremembe.',
+            currentEditVersion,
+          },
+          { status: 409 }
+        )
+      }
+
+      nextEditVersions = {
+        ...currentEditVersions,
+        [editScopeKey]: currentEditVersion + 1,
+      }
+    }
+
     if (offerId) {
       const { error: updateOfferError } = await supabase
         .from('weekly_offers')
@@ -180,6 +357,7 @@ export async function POST(request: Request) {
           cutoff_hour: weeklyOffer.cutoffHour,
           cutoff_minute: weeklyOffer.cutoffMinute,
           cutoff_overrides: weeklyOffer.cutoffOverrides,
+          edit_versions: nextEditVersions,
           starts_on: startsOn,
           ends_on: endsOn,
           is_active: true,
@@ -198,6 +376,7 @@ export async function POST(request: Request) {
           cutoff_hour: weeklyOffer.cutoffHour,
           cutoff_minute: weeklyOffer.cutoffMinute,
           cutoff_overrides: weeklyOffer.cutoffOverrides,
+          edit_versions: nextEditVersions,
           starts_on: startsOn,
           ends_on: endsOn,
           is_active: true,
@@ -214,7 +393,7 @@ export async function POST(request: Request) {
 
     const { data: existingItems, error: existingItemsError } = await supabase
       .from('meal_items')
-      .select('id,is_always_available')
+      .select('id,service_date,meal_period,is_always_available')
       .eq('offer_id', offerId)
 
     if (existingItemsError) {
@@ -250,16 +429,39 @@ export async function POST(request: Request) {
     }))
 
     const incomingItems = [...incomingDayItems, ...incomingAlwaysItems]
+    const incomingScopes = new Set(incomingItems.map(getItemScope))
+    const editableScopes = getEditableScopes(body.editScope, incomingScopes)
 
     const incomingExistingIds = incomingItems
       .map((item) => item.id)
       .filter((id) => isUuid(id))
 
     const removableIds = (existingItems ?? [])
-      .filter((item) => !incomingExistingIds.includes(item.id))
+      .filter((item) => {
+        const itemScope = getItemScope(item)
+
+        return editableScopes.has(itemScope) && !incomingExistingIds.includes(item.id)
+      })
       .map((item) => item.id)
 
     if (removableIds.length > 0) {
+      const { data: blockingOrders, error: blockingOrdersError } = await supabase
+        .from('orders')
+        .select('meal_item_id')
+        .in('meal_item_id', removableIds)
+        .limit(1)
+
+      if (blockingOrdersError) {
+        throw blockingOrdersError
+      }
+
+      if ((blockingOrders ?? []).length > 0) {
+        return NextResponse.json(
+          { error: 'Jedi, na katero je nekdo ze prijavljen, ni mogoce izbrisati.' },
+          { status: 409 }
+        )
+      }
+
       const { error: deleteMealsError } = await supabase
         .from('meal_items')
         .delete()
@@ -270,8 +472,9 @@ export async function POST(request: Request) {
       }
     }
 
-    const itemsToUpdate = incomingItems.filter((item) => isUuid(item.id))
-    const itemsToInsert = incomingItems.filter((item) => !isUuid(item.id))
+    const editableIncomingItems = incomingItems.filter((item) => editableScopes.has(getItemScope(item)))
+    const itemsToUpdate = editableIncomingItems.filter((item) => isUuid(item.id))
+    const itemsToInsert = editableIncomingItems.filter((item) => !isUuid(item.id))
 
     if (itemsToUpdate.length > 0) {
       const { error: updateMealsError } = await supabase
@@ -315,6 +518,19 @@ export async function POST(request: Request) {
         throw insertMealsError
       }
     }
+
+    await writeAppAuditLog(supabase, {
+      actor,
+      action: body.editScope?.kind === 'always' ? 'save_always_available' : 'save_weekly_offer',
+      targetTable: 'weekly_offers',
+      targetId: offerId,
+      metadata: {
+        editScope: body.editScope ?? null,
+        insertedItems: itemsToInsert.length,
+        updatedItems: itemsToUpdate.length,
+        deletedItems: removableIds.length,
+      },
+    })
 
     const appData = await loadAppData()
 

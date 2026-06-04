@@ -26,6 +26,7 @@ type DbWeeklyOffer = {
   cutoff_hour: number
   cutoff_minute: number | null
   cutoff_overrides: WeeklyOffer['cutoffOverrides'] | null
+  edit_versions: WeeklyOffer['editVersions'] | null
   starts_on: string
   ends_on: string
   is_active: boolean
@@ -133,6 +134,7 @@ function mapDbOffer(offer: DbWeeklyOffer, items: DbMealItem[]): WeeklyOffer {
     cutoffHour: offer.cutoff_hour,
     cutoffMinute: offer.cutoff_minute ?? 0,
     cutoffOverrides: offer.cutoff_overrides ?? {},
+    editVersions: offer.edit_versions ?? {},
     alwaysAvailable,
     days: weekDates.map((date) => ({
       date,

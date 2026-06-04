@@ -20,6 +20,25 @@ function normalizeDepartmentName(department: string | null | undefined) {
   return normalized || 'Ostalo'
 }
 
+async function writeOrderAuditLog(
+  supabase: ReturnType<typeof getSupabaseServerClient>,
+  payload: {
+    actor: { id: string; username: string; role: string }
+    action: string
+    metadata: Record<string, unknown>
+  }
+) {
+  await supabase.from('app_audit_log').insert({
+    actor_user_id: payload.actor.id,
+    actor_username: payload.actor.username,
+    actor_role: payload.actor.role,
+    action: payload.action,
+    target_table: 'orders',
+    target_id: null,
+    metadata: payload.metadata,
+  })
+}
+
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
@@ -37,7 +56,7 @@ export async function POST(request: Request) {
     const supabase = getSupabaseServerClient()
     const { data: user, error: userError } = await supabase
       .from('users')
-      .select('id,department,role')
+      .select('id,username,department,role')
       .eq('id', body.userId)
       .maybeSingle()
 
@@ -88,6 +107,17 @@ export async function POST(request: Request) {
       throw error
     }
 
+    await writeOrderAuditLog(supabase, {
+      actor: user,
+      action: 'place_order',
+      metadata: {
+        serviceDate: body.serviceDate,
+        mealItemId: body.mealItemId,
+        mealPeriod: body.mealPeriod,
+        hasNote: Boolean(body.note?.trim()),
+      },
+    })
+
     return NextResponse.json({ ok: true })
   } catch (error) {
     console.error('Saving order failed.', error)
@@ -108,6 +138,20 @@ export async function DELETE(request: Request) {
     }
 
     const supabase = getSupabaseServerClient()
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id,username,role')
+      .eq('id', body.userId)
+      .maybeSingle()
+
+    if (userError) {
+      throw userError
+    }
+
+    if (!user) {
+      return NextResponse.json({ error: 'Uporabnik ne obstaja vec.' }, { status: 400 })
+    }
+
     const { error } = await supabase
       .from('orders')
       .delete()
@@ -118,6 +162,15 @@ export async function DELETE(request: Request) {
     if (error) {
       throw error
     }
+
+    await writeOrderAuditLog(supabase, {
+      actor: user,
+      action: 'remove_order',
+      metadata: {
+        serviceDate: body.serviceDate,
+        mealPeriod: body.mealPeriod,
+      },
+    })
 
     return NextResponse.json({ ok: true })
   } catch (error) {
