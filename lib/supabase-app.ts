@@ -154,9 +154,26 @@ function mapDbOffer(offer: DbWeeklyOffer, items: DbMealItem[]): WeeklyOffer {
   }
 }
 
+async function deactivateExpiredOffers(
+  supabase: ReturnType<typeof getSupabaseServerClient>,
+  today: string
+) {
+  const { error } = await supabase
+    .from('weekly_offers')
+    .update({ is_active: false })
+    .eq('is_active', true)
+    .lt('ends_on', today)
+
+  if (error) {
+    throw error
+  }
+}
+
 export async function loadAppData() {
   const supabase = getSupabaseServerClient()
   const today = new Date().toISOString().slice(0, 10)
+
+  await deactivateExpiredOffers(supabase, today)
 
   const [{ data: users, error: usersError }, { data: activeOffers, error: offersError }] =
     await Promise.all([
