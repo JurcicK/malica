@@ -3,7 +3,6 @@
 import type { Dispatch, KeyboardEvent, SetStateAction } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import {
-  defaultOrders,
   defaultWeeklyOffer,
   demoUsers,
   type CutoffTime,
@@ -46,6 +45,15 @@ type WeeklyDraftCell = LocalizedText
 type WeeklyDraft = Record<string, Record<MenuCategory, WeeklyDraftCell>>
 type WeeklyDraftByPeriod = Record<MealPeriod, WeeklyDraft>
 type PrintDepartment = 'Pisarne' | 'Delavnica'
+type AdminSection = 'overview' | 'weekly' | 'always' | 'cutoffs' | 'week' | 'users'
+type AdminOrderRemoval = {
+  userId: string
+  userName: string
+  mealPeriod: MealPeriod
+  date: string
+  mealTitle: string
+  step: 1 | 2
+}
 type ParsedWeeklyMenuDay = {
   date: string
   items: Array<{
@@ -148,6 +156,10 @@ function normalizeDepartmentName(department: string) {
   }
 
   return department.trim() || 'Ostalo'
+}
+
+function canAdminEditNickname(user: UserProfile) {
+  return user.username.toLowerCase().includes('delavec')
 }
 
 function canSeeOfferDay(dateString: string, user: UserProfile | null) {
@@ -340,6 +352,36 @@ function getMealPeriodLabel(period: MealPeriod, language: Language) {
   return mealPeriodLabels[period][language]
 }
 
+function getAdminCategoryLabel(category: MenuCategory, language: Language, t: (typeof translations)[Language]) {
+  const baseLabel = t.categoryLabels[category]
+  const menuNumbers: Partial<Record<MenuCategory, string>> = {
+    'bodi fit': '1. meni',
+    vege: '2. meni',
+    'ali pa..': '3. meni',
+    'na hitro...': '4. meni',
+  }
+
+  const menuNumber = menuNumbers[category]
+
+  if (!menuNumber) {
+    return baseLabel
+  }
+
+  if (language === 'en') {
+    return `${baseLabel} (${menuNumber.replace('meni', 'menu')})`
+  }
+
+  if (language === 'uk') {
+    return `${baseLabel} (${menuNumber.replace('meni', 'меню')})`
+  }
+
+  if (language === 'bs') {
+    return `${baseLabel} (${menuNumber})`
+  }
+
+  return `${baseLabel} (${menuNumber})`
+}
+
 function getAlwaysAvailableScopeDate(dateString: string) {
   return isSaturday(dateString) ? dateString : undefined
 }
@@ -406,7 +448,7 @@ export default function Home() {
   const [message, setMessage] = useState('')
   const [loggedInUser, setLoggedInUser] = useState<UserProfile | null>(null)
   const [users, setUsers] = useState<UserProfile[]>(demoUsers)
-  const [orders, setOrders] = useState<OrdersByDay>(defaultOrders)
+  const [orders, setOrders] = useState<OrdersByDay>({})
   const [weeklyOffers, setWeeklyOffers] = useState<WeeklyOffer[]>([defaultWeeklyOffer])
   const [weeklyOffer, setWeeklyOffer] = useState<WeeklyOffer>(defaultWeeklyOffer)
   const [selectedWeekKey, setSelectedWeekKey] = useState(getWeekKey(defaultWeeklyOffer))
@@ -416,6 +458,7 @@ export default function Home() {
   const [pendingMeal, setPendingMeal] = useState<MenuItem | null>(null)
   const [pendingMealNote, setPendingMealNote] = useState('')
   const [pendingOrderRemoval, setPendingOrderRemoval] = useState<{ date: string; period: MealPeriod } | null>(null)
+  const [pendingAdminOrderRemoval, setPendingAdminOrderRemoval] = useState<AdminOrderRemoval | null>(null)
   const [isSavingOrder, setIsSavingOrder] = useState(false)
   const [isConfirmingNewWeek, setIsConfirmingNewWeek] = useState(false)
   const [newWeekStart, setNewWeekStart] = useState(addDaysToIsoDate(new Date().toISOString().slice(0, 10), 7))
@@ -429,6 +472,17 @@ export default function Home() {
   const [isSavingOffer, setIsSavingOffer] = useState(false)
   const [isImportingWeeklyMenu, setIsImportingWeeklyMenu] = useState(false)
   const [printDepartment, setPrintDepartment] = useState<PrintDepartment>('Pisarne')
+  const [adminSection, setAdminSection] = useState<AdminSection>('overview')
+  const [manualOrderUserId, setManualOrderUserId] = useState('')
+  const [manualOrderMealItemId, setManualOrderMealItemId] = useState('')
+  const [manualOrderNote, setManualOrderNote] = useState('')
+  const [userNameDrafts, setUserNameDrafts] = useState<Record<string, string>>({})
+  const [isSavingUserProfile, setIsSavingUserProfile] = useState(false)
+  const [newUserUsername, setNewUserUsername] = useState('')
+  const [newUserPassword, setNewUserPassword] = useState('')
+  const [newUserFullName, setNewUserFullName] = useState('')
+  const [newUserDepartment, setNewUserDepartment] = useState<'Delavnica' | 'Pisarne'>('Delavnica')
+  const [isCreatingUser, setIsCreatingUser] = useState(false)
   const [lastAdminActivityAt, setLastAdminActivityAt] = useState(() => Date.now())
   const [adminIdleSecondsLeft, setAdminIdleSecondsLeft] = useState<number | null>(null)
 
@@ -436,7 +490,7 @@ export default function Home() {
     const timeoutId = window.setTimeout(() => {
       const normalizedOffer = normalizeWeeklyOffer(defaultWeeklyOffer)
 
-      setOrders(defaultOrders)
+      setOrders({})
       setWeeklyOffers([normalizedOffer])
       setWeeklyOffer(normalizedOffer)
       setSelectedWeekKey(getWeekKey(normalizedOffer))
@@ -463,6 +517,12 @@ export default function Home() {
       window.localStorage.setItem('malica:selectedMealPeriod', selectedMealPeriod)
     }
   }, [selectedMealPeriod])
+
+  useEffect(() => {
+    setUserNameDrafts(
+      Object.fromEntries(users.map((user) => [user.id, user.fullName]))
+    )
+  }, [users])
 
   useEffect(() => {
     if (loggedInUser?.role !== 'admin') {
@@ -662,6 +722,21 @@ export default function Home() {
     department,
     total: meals.reduce((sum, meal) => sum + meal.people.length, 0),
   }))
+  const adminEligibleEmployees = users.filter(
+    (user) =>
+      user.role === 'employee' &&
+      canSeeOfferDay(selectedOfferDay.date, user) &&
+      getAvailableMealPeriods(selectedOfferDay.date, user).includes(activeMealPeriod)
+  )
+  const adminTotalOrders = getPeriodOrders(orders, selectedOfferDay.date, activeMealPeriod).length
+  const adminPendingOrders = Math.max(adminEligibleEmployees.length - adminTotalOrders, 0)
+  const adminTopMeal = [...adminBreakdown].sort((a, b) => b.people.length - a.people.length)[0]
+  const adminScopeLabel = `${getLocalizedText(selectedOfferDay.label, language)} - ${getMealPeriodLabel(activeMealPeriod, language)}`
+  const adminManualOrderUsers = adminEligibleEmployees.filter((user) => user.id !== loggedInUser?.id)
+  const selectedManualOrder = manualOrderUserId
+    ? orders[selectedOfferDay.date]?.[manualOrderUserId]?.[activeMealPeriod]
+    : undefined
+  const usersForAdminEdit = users.filter((user) => user.role === 'employee' && canAdminEditNickname(user))
   const printOrdersCard = (department: PrintDepartment) => {
     setPrintDepartment(department)
     const departmentMeals = adminByDepartment.find(([name]) => name === department)?.[1] ?? []
@@ -675,7 +750,7 @@ export default function Home() {
               <section class="meal">
                 <div class="meal-head">
                   <div>
-                    <p class="category">${escapeHtml(t.categoryLabels[item.category])}</p>
+                    <p class="category">${escapeHtml(getAdminCategoryLabel(item.category, language, t))}</p>
                     <h2>${escapeHtml(getLocalizedText(item.title, language))}</h2>
                   </div>
                   <strong>${people.length}</strong>
@@ -1107,6 +1182,239 @@ export default function Home() {
     setMessage(
       `${t.remove}: ${getLocalizedText(day.label, language).toLowerCase()} (${getMealPeriodLabel(mealPeriod, language)})`
     )
+  }
+
+  const saveAdminManualOrder = async () => {
+    if (!loggedInUser || loggedInUser.role !== 'admin') return
+
+    if (!manualOrderUserId || !manualOrderMealItemId) {
+      setMessage('Najprej izberi uporabnika in malico.')
+      return
+    }
+
+    setIsSavingOrder(true)
+
+    try {
+      const response = await fetch('/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          serviceDate: selectedOfferDay.date,
+          userId: manualOrderUserId,
+          mealItemId: manualOrderMealItemId,
+          mealPeriod: activeMealPeriod,
+          note: manualOrderNote,
+          actorUserId: loggedInUser.id,
+        }),
+      })
+
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as { error?: string } | null
+        setMessage(data?.error ?? 'Ročni vnos prijave ni uspel.')
+        setIsSavingOrder(false)
+        return
+      }
+    } catch {
+      setMessage('Ročni vnos prijave ni uspel.')
+      setIsSavingOrder(false)
+      return
+    }
+
+    setOrders((current) => ({
+      ...current,
+      [selectedOfferDay.date]: {
+        ...(current[selectedOfferDay.date] ?? {}),
+        [manualOrderUserId]: {
+          ...(current[selectedOfferDay.date]?.[manualOrderUserId] ?? {}),
+          [activeMealPeriod]: {
+            mealItemId: manualOrderMealItemId,
+            note: manualOrderNote.trim() || undefined,
+          },
+        },
+      },
+    }))
+
+    const targetUser = users.find((user) => user.id === manualOrderUserId)
+    const targetMeal = mergedItems.find((item) => item.id === manualOrderMealItemId)
+    setMessage(
+      `Ročno dodana prijava: ${targetUser?.fullName ?? 'uporabnik'} - ${targetMeal ? getLocalizedText(targetMeal.title, language) : 'malica'}`
+    )
+    setManualOrderNote('')
+    setIsSavingOrder(false)
+  }
+
+  const saveUserDisplayName = async (userId: string) => {
+    if (!loggedInUser || loggedInUser.role !== 'admin') return
+
+    setIsSavingUserProfile(true)
+
+    try {
+      const response = await fetch('/api/users', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          actorUserId: loggedInUser.id,
+          adminPassword: loggedInUser.password,
+          targetUserId: userId,
+          fullName: userNameDrafts[userId] ?? '',
+        }),
+      })
+
+      const data = (await response.json().catch(() => null)) as
+        | { user?: Pick<UserProfile, 'id' | 'username' | 'fullName' | 'role' | 'department'>; error?: string }
+        | null
+
+      if (!response.ok || !data?.user) {
+        setMessage(data?.error ?? 'Shranjevanje imena ni uspelo.')
+        setIsSavingUserProfile(false)
+        return
+      }
+
+      setUsers((current) =>
+        current.map((user) =>
+          user.id === userId
+            ? {
+                ...user,
+                fullName: data.user!.fullName,
+                username: data.user!.username,
+                role: data.user!.role,
+                department: data.user!.department,
+              }
+            : user
+        )
+      )
+      if (loggedInUser.id === userId) {
+        setLoggedInUser((current) =>
+          current
+            ? {
+                ...current,
+                fullName: data.user!.fullName,
+                username: data.user!.username,
+                role: data.user!.role,
+                department: data.user!.department,
+              }
+            : current
+        )
+      }
+      setMessage(`Prikazno ime posodobljeno za ${data.user.username}.`)
+    } catch {
+      setMessage('Shranjevanje imena ni uspelo.')
+    } finally {
+      setIsSavingUserProfile(false)
+    }
+  }
+
+  const createAdminUser = async () => {
+    if (!loggedInUser || loggedInUser.role !== 'admin') return
+
+    if (!newUserUsername.trim() || !newUserPassword.trim() || !newUserFullName.trim()) {
+      setMessage('Vnesi username, password in ime uporabnika.')
+      return
+    }
+
+    setIsCreatingUser(true)
+
+    try {
+      const response = await fetch('/api/users', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          actorUserId: loggedInUser.id,
+          adminPassword: loggedInUser.password,
+          username: newUserUsername,
+          password: newUserPassword,
+          fullName: newUserFullName,
+          department: newUserDepartment,
+        }),
+      })
+
+      const data = (await response.json().catch(() => null)) as
+        | { user?: Pick<UserProfile, 'id' | 'username' | 'fullName' | 'role' | 'department'>; error?: string }
+        | null
+
+      if (!response.ok || !data?.user) {
+        setMessage(data?.error ?? 'Dodajanje uporabnika ni uspelo.')
+        setIsCreatingUser(false)
+        return
+      }
+
+      const createdUser = data.user
+
+      setUsers((current) => [
+        ...current,
+        {
+          id: createdUser.id,
+          username: createdUser.username,
+          fullName: createdUser.fullName,
+          role: createdUser.role,
+          department: createdUser.department,
+          password: newUserPassword,
+        },
+      ])
+      setNewUserUsername('')
+      setNewUserPassword('')
+      setNewUserFullName('')
+      setNewUserDepartment('Delavnica')
+      setMessage(`Uporabnik ${createdUser.username} je dodan.`)
+    } catch {
+      setMessage('Dodajanje uporabnika ni uspelo.')
+    } finally {
+      setIsCreatingUser(false)
+    }
+  }
+
+  const removeAdminOrder = async (removal: AdminOrderRemoval) => {
+    if (!loggedInUser || loggedInUser.role !== 'admin') return
+
+    setIsSavingOrder(true)
+
+    try {
+      const response = await fetch('/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'remove',
+          serviceDate: removal.date,
+          userId: removal.userId,
+          mealPeriod: removal.mealPeriod,
+          actorUserId: loggedInUser.id,
+        }),
+      })
+
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as { error?: string } | null
+        setMessage(data?.error ?? 'Odstranjevanje prijave ni uspelo.')
+        setIsSavingOrder(false)
+        return
+      }
+
+      setOrders((current) => ({
+        ...current,
+        [removal.date]: Object.fromEntries(
+          Object.entries(current[removal.date] ?? {}).map(([userId, userOrders]) => [
+            userId,
+            userId === removal.userId
+              ? Object.fromEntries(Object.entries(userOrders).filter(([period]) => period !== removal.mealPeriod))
+              : userOrders,
+          ])
+        ),
+      }))
+
+      setMessage(`Odstranjena prijava: ${removal.userName} za ${removal.mealTitle}.`)
+      setPendingAdminOrderRemoval(null)
+    } catch {
+      setMessage('Odstranjevanje prijave ni uspelo.')
+    } finally {
+      setIsSavingOrder(false)
+    }
   }
 
   const createNewWeek = async () => {
@@ -1780,6 +2088,847 @@ export default function Home() {
     )
   }
 
+  if (loggedInUser.role === 'admin') {
+    const adminMenuItems: Array<{ id: AdminSection; label: string; description: string }> = [
+      { id: 'overview', label: 'Pregled prijav', description: 'Kdo je prijavljen in po oddelkih.' },
+      { id: 'weekly', label: 'Tedenska ponudba', description: 'Glavni tedenski meniji in Excel uvoz.' },
+      { id: 'always', label: 'Stalna ponudba', description: 'Vedno vidne jedi in sobotne izjeme.' },
+      { id: 'cutoffs', label: 'Roki prijave', description: 'Uredi splošne in dnevne roke.' },
+      { id: 'week', label: 'Novi teden', description: 'Ustvari naslednji teden ponudbe.' },
+      { id: 'users', label: 'Uporabniki', description: 'Ročni vnosi in prikazna imena.' },
+    ]
+
+    return (
+      <main className="page-shell warm-grid min-h-screen px-4 py-6 sm:px-6 lg:px-8">
+        <div className="relative z-10 mx-auto flex w-full max-w-[1680px] flex-col gap-6">
+          <section className="glass-panel rounded-[2rem] p-5 sm:p-6 lg:p-8">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
+                  Admin center
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <h1 className="font-[var(--font-display)] text-3xl font-bold sm:text-4xl">
+                    Upravljanje malic
+                  </h1>
+                  <LanguageSwitcher language={language} setLanguage={setLanguage} />
+                </div>
+                <p className="mt-3 max-w-3xl text-sm leading-6 text-[var(--muted)] sm:text-base">
+                  Tukaj urejaš ponudbo, roke prijave in spremljaš prijave po oddelkih brez preklapljanja med uporabniškimi pogledi.
+                </p>
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  Aktivni teden: {formatWeekRange(weeklyOffer)}
+                </p>
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <div className="rounded-2xl border border-[var(--line)] bg-white/70 px-4 py-3 text-sm">
+                  <p className="font-semibold">{loggedInUser.department}</p>
+                  <p className="text-[var(--muted)]">
+                    {now.toLocaleDateString(
+                      language === 'uk' ? 'uk-UA' : language === 'en' ? 'en-US' : language === 'bs' ? 'bs-BA' : 'sl-SI'
+                    )}{' '}
+                    {language === 'sl' ? 'ob' : language === 'uk' ? 'о' : 'at'}{' '}
+                    {now.toLocaleTimeString('sl-SI', { hour: '2-digit', minute: '2-digit' })}
+                  </p>
+                </div>
+                <button
+                  onClick={logout}
+                  className="rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold transition hover:bg-orange-50"
+                >
+                  {t.logout}
+                </button>
+              </div>
+            </div>
+          </section>
+
+          {adminIdleSecondsLeft !== null ? (
+            <div className="rounded-[1.5rem] border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
+              Admin seja bo zaradi neaktivnosti potekla cez {Math.ceil(adminIdleSecondsLeft / 60)} min.
+            </div>
+          ) : null}
+
+          <section className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
+            <aside className="glass-panel self-start rounded-[2rem] p-5 sm:p-6">
+              <div className="rounded-[1.4rem] border border-[var(--line)] bg-white/80 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                  Kontekst
+                </p>
+                <p className="mt-2 font-[var(--font-display)] text-xl font-semibold">{adminScopeLabel}</p>
+                <p className="mt-2 text-sm text-[var(--muted)]">{formatDate(selectedOfferDay.date, language)}</p>
+              </div>
+
+              <div className="mt-4 rounded-[1.4rem] border border-[var(--line)] bg-white/80 p-4">
+                <label className="block">
+                  <span className="mb-2 block text-sm font-medium text-[var(--muted)]">Teden</span>
+                  <select
+                    value={selectedWeekKey}
+                    onChange={(event) => {
+                      const nextOffer = weeklyOffers.find((offer) => getWeekKey(offer) === event.target.value)
+                      if (nextOffer) {
+                        switchWeeklyOffer(nextOffer)
+                      }
+                    }}
+                    className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                  >
+                    {weeklyOffers.map((offer) => (
+                      <option key={getWeekKey(offer)} value={getWeekKey(offer)}>
+                        {formatWeekRange(offer)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="mt-4 rounded-[1.4rem] border border-[var(--line)] bg-white/80 p-4">
+                <label className="block">
+                  <span className="mb-2 block text-sm font-medium text-[var(--muted)]">Termin ponudbe</span>
+                  <select
+                    value={activeMealPeriod}
+                    onChange={(event) => setSelectedMealPeriod(event.target.value as MealPeriod)}
+                    className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                  >
+                    {availableMealPeriods.map((period) => (
+                      <option key={period} value={period}>
+                        {getMealPeriodLabel(period, language)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="mt-4">
+                <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
+                  Admin meni
+                </p>
+                <div className="mt-3 space-y-2">
+                  {adminMenuItems.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setAdminSection(item.id)}
+                      className={`w-full rounded-[1.2rem] border px-4 py-3 text-left transition ${
+                        adminSection === item.id
+                          ? 'border-orange-300 bg-orange-50'
+                          : 'border-[var(--line)] bg-white/75 hover:bg-white'
+                      }`}
+                    >
+                      <p className="font-semibold">{item.label}</p>
+                      <p className="mt-1 text-sm text-[var(--muted)]">{item.description}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-5">
+                <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
+                  Dnevi
+                </p>
+                <div className="mt-3 space-y-2">
+                  {visibleOfferDays.map((day) => {
+                    const dayCutoff = getCutoffTimeForDay(day.date, activeMealPeriod, weeklyOffer)
+                    const locked = isLocked(day.date, dayCutoff, now)
+                    const dayOrders = getPeriodOrders(orders, day.date, activeMealPeriod).length
+
+                    return (
+                      <button
+                        key={day.date}
+                        type="button"
+                        onClick={() => setSelectedDay(day.date)}
+                        className={`w-full rounded-[1.2rem] border px-4 py-3 text-left transition ${
+                          activeSelectedDay === day.date
+                            ? 'border-orange-300 bg-orange-50'
+                            : 'border-[var(--line)] bg-white/75 hover:bg-white'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="font-semibold">{getLocalizedText(day.label, language)}</p>
+                            <p className="mt-1 text-sm text-[var(--muted)]">{formatDate(day.date, language)}</p>
+                          </div>
+                          <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] ${locked ? 'bg-stone-200 text-stone-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                            {locked ? t.locked : t.open}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm text-[var(--muted)]">{dayOrders} {t.registrationsForDay}</p>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            </aside>
+
+            <div className="space-y-6">
+              {adminSection === 'overview' ? (
+                <section className="space-y-6">
+                  <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
+                          Pregled prijav
+                        </p>
+                        <h2 className="mt-2 font-[var(--font-display)] text-3xl font-bold">{adminScopeLabel}</h2>
+                        <p className="mt-2 text-sm text-[var(--muted)]">{formatDate(selectedOfferDay.date, language)}</p>
+                      </div>
+                      <div className="rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm font-semibold text-orange-900">
+                        Rok prijave: {formatCutoffTime(selectedDayCutoff)}
+                      </div>
+                    </div>
+
+                    <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                      <div className="rounded-[1.2rem] border border-[var(--line)] bg-white px-4 py-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">Skupaj prijav</p>
+                        <p className="mt-2 font-[var(--font-display)] text-3xl font-semibold">{adminTotalOrders}</p>
+                      </div>
+                      <div className="rounded-[1.2rem] border border-[var(--line)] bg-white px-4 py-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">Brez prijave</p>
+                        <p className="mt-2 font-[var(--font-display)] text-3xl font-semibold">{adminPendingOrders}</p>
+                        <p className="mt-1 text-sm text-[var(--muted)]">Od {adminEligibleEmployees.length} možnih</p>
+                      </div>
+                      <div className="rounded-[1.2rem] border border-[var(--line)] bg-white px-4 py-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">Meniji v ponudbi</p>
+                        <p className="mt-2 font-[var(--font-display)] text-3xl font-semibold">{mergedItems.length}</p>
+                      </div>
+                      <div className="rounded-[1.2rem] border border-[var(--line)] bg-white px-4 py-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">Najbolj izbrano</p>
+                        <p className="mt-2 line-clamp-2 font-semibold">
+                          {adminTopMeal ? getLocalizedText(adminTopMeal.item.title, language) : 'Ni prijav'}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <section className="grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
+                    <div className="glass-panel rounded-[1.8rem] p-5">
+                      <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
+                        Oddelki
+                      </p>
+                      <div className="mt-4 space-y-2">
+                        {(['Pisarne', 'Delavnica'] as PrintDepartment[]).map((department) => {
+                          const total = adminDepartmentSummary.find((entry) => entry.department === department)?.total ?? 0
+
+                          return (
+                            <button
+                              key={department}
+                              type="button"
+                              onClick={() => setPrintDepartment(department)}
+                              className={`flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-left text-sm font-semibold transition ${
+                                printDepartment === department
+                                  ? 'border-orange-300 bg-orange-50 text-orange-900'
+                                  : 'border-[var(--line)] bg-white text-[var(--foreground)] hover:bg-orange-50'
+                              }`}
+                            >
+                              <span>{department}</span>
+                              <span className="rounded-full bg-white/90 px-2.5 py-1 text-xs">{total}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => printOrdersCard(printDepartment)}
+                        className="mt-4 w-full rounded-2xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[var(--accent-strong)]"
+                      >
+                        Tiskaj izbrani oddelek
+                      </button>
+
+                      <div className="mt-5 rounded-[1.2rem] border border-[var(--line)] bg-[var(--accent-soft)]/45 p-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                          Ročni vnos prijave
+                        </p>
+                        <p className="mt-2 text-sm text-[var(--muted)]">
+                          Če se nekdo pozabi prijaviti, ga tukaj dodaš za izbran dan in termin.
+                        </p>
+                        <div className="mt-4 space-y-3">
+                          <label className="block">
+                            <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                              Uporabnik
+                            </span>
+                            <select
+                              value={manualOrderUserId}
+                              onChange={(event) => setManualOrderUserId(event.target.value)}
+                              className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+                            >
+                              <option value="">Izberi uporabnika</option>
+                              {adminManualOrderUsers.map((user) => (
+                                <option key={user.id} value={user.id}>
+                                  {user.fullName} ({user.username})
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <label className="block">
+                            <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                              Malica
+                            </span>
+                            <select
+                              value={manualOrderMealItemId}
+                              onChange={(event) => setManualOrderMealItemId(event.target.value)}
+                              className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+                            >
+                              <option value="">Izberi malico</option>
+                              {mergedItems.map((item) => (
+                                <option key={item.id} value={item.id}>
+                                  {getAdminCategoryLabel(item.category, language, t)} - {getLocalizedText(item.title, language)}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <label className="block">
+                            <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                              Opomba
+                            </span>
+                            <input
+                              value={manualOrderNote}
+                              onChange={(event) => setManualOrderNote(event.target.value)}
+                              placeholder="npr. brez zelja"
+                              className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+                            />
+                          </label>
+
+                          {selectedManualOrder ? (
+                            <div className="rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-900">
+                              Uporabnik je že prijavljen. Novi vnos bo prepisal obstoječo izbiro.
+                            </div>
+                          ) : null}
+
+                          <button
+                            type="button"
+                            onClick={() => void saveAdminManualOrder()}
+                            disabled={isSavingOrder}
+                            className="w-full rounded-2xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-stone-300"
+                          >
+                            {isSavingOrder ? 'Shranjujem...' : 'Dodaj prijavo'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="glass-panel rounded-[1.8rem] p-5">
+                      {adminByDepartment.length === 0 ? (
+                        <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/75 p-5 text-sm text-[var(--muted)]">
+                          {t.noOrders}
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          {adminByDepartment.map(([department, meals]) => (
+                            <div
+                              key={department}
+                              className={department === printDepartment ? '' : 'hidden'}
+                            >
+                              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                <div>
+                                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">Oddelek</p>
+                                  <h3 className="mt-1 font-[var(--font-display)] text-2xl font-semibold">{department}</h3>
+                                </div>
+                                <div className="rounded-2xl border border-orange-200 bg-orange-50 px-4 py-2 text-sm font-semibold text-orange-900">
+                                  {meals.reduce((sum, meal) => sum + meal.people.length, 0)} prijav
+                                </div>
+                              </div>
+                              <div className="mt-4 grid gap-3">
+                                {meals.map(({ item, people }) => (
+                                  <div key={`${department}-${item.id}`} className="rounded-[1rem] border border-[var(--line)] bg-white p-4">
+                                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                      <div>
+                                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                                          {getAdminCategoryLabel(item.category, language, t)}
+                                        </p>
+                                        <p className="mt-2 font-[var(--font-display)] text-lg font-semibold">
+                                          {getLocalizedText(item.title, language)}
+                                        </p>
+                                      </div>
+                                      <div className="rounded-full border border-[var(--line)] bg-orange-50 px-3 py-1 text-sm font-semibold text-orange-800">
+                                        {people.length} prijav
+                                      </div>
+                                    </div>
+                                    <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                                      {people.map(({ user, note }) => (
+                                        <div key={user.id} className="rounded-2xl border border-[var(--line)] bg-[var(--accent-soft)] px-3 py-2 text-sm">
+                                          <p className="font-semibold">{user.fullName}</p>
+                                          <p className="text-[var(--muted)]">{user.username}</p>
+                                          {note ? <p className="mt-1 text-xs text-[var(--muted)]">Opomba: {note}</p> : null}
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              setPendingAdminOrderRemoval({
+                                                userId: user.id,
+                                                userName: user.fullName,
+                                                mealPeriod: activeMealPeriod,
+                                                date: selectedOfferDay.date,
+                                                mealTitle: getLocalizedText(item.title, language),
+                                                step: 1,
+                                              })
+                                            }
+                                            className="mt-2 rounded-xl border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-50"
+                                          >
+                                            Odstrani prijavo
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                </section>
+              ) : null}
+
+              {adminSection === 'weekly' ? (
+                <section className="space-y-6">
+                  <section className="glass-panel rounded-[1.8rem] p-5 sm:p-6">
+                    <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
+                      Tedenska ponudba
+                    </p>
+                    <h2 className="mt-2 font-[var(--font-display)] text-3xl font-bold">
+                      {t.addMeal} - {getMealPeriodLabel(activeMealPeriod, language)}
+                    </h2>
+                    <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{t.addMealHint}</p>
+                    <div className="mt-5 rounded-[1rem] border border-[var(--line)] bg-white/70 p-4">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                          <p className="text-sm font-semibold text-[var(--foreground)]">Uvoz dopoldanske ponudbe iz Excela</p>
+                          <p className="mt-1 text-sm leading-6 text-[var(--muted)]">
+                            Izberi tedensko predlogo. Uvoz napolni ponedeljek-petek za dopoldansko malico.
+                          </p>
+                        </div>
+                        <label className="inline-flex cursor-pointer items-center justify-center rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold transition hover:bg-orange-50">
+                          {isImportingWeeklyMenu ? 'Uvažam...' : 'Izberi Excel'}
+                          <input
+                            type="file"
+                            accept=".xlsx"
+                            disabled={isImportingWeeklyMenu}
+                            onChange={(event) => {
+                              void importMorningMenuFromExcel(event.target.files?.[0])
+                              event.target.value = ''
+                            }}
+                            className="sr-only"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                    <div className="mt-6">
+                      <div className="w-full">
+                        <div
+                          className="grid gap-3"
+                          style={{ gridTemplateColumns: `130px repeat(${weeklyOffer.days.length}, minmax(0, 1fr))` }}
+                        >
+                          <div className="rounded-2xl bg-white/60 px-4 py-3 text-sm font-semibold text-[var(--muted)]">
+                            {t.category}
+                          </div>
+                          {weeklyOffer.days.map((day) => (
+                            <div key={day.date} className="rounded-2xl bg-white/60 px-4 py-3">
+                              <p className="text-sm font-semibold">{getLocalizedText(day.label, language)}</p>
+                              <p className="mt-1 text-xs text-[var(--muted)]">{formatDate(day.date, language)}</p>
+                            </div>
+                          ))}
+                          {weeklyCategories.map((category) => (
+                            <GridRow
+                              key={category}
+                              categoryLabel={t.categoryLabels[category]}
+                              category={category}
+                              days={weeklyOffer.days}
+                              period={activeMealPeriod}
+                              draft={weeklyDraft[activeMealPeriod]}
+                              editingCells={editingCells}
+                              setEditingCells={setEditingCells}
+                              setWeeklyDraft={setWeeklyDraft}
+                              onAutoTranslate={autoTranslateWeeklyCell}
+                              t={t}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-5 flex justify-end">
+                      <button
+                        onClick={saveWeeklyOffer}
+                        disabled={isSavingOffer}
+                        className="relative z-10 rounded-2xl bg-[var(--accent)] px-5 py-3 font-semibold text-white transition hover:bg-[var(--accent-strong)] active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-stone-300"
+                      >
+                        {isSavingOffer ? t.addingMeal : t.addToOffer}
+                      </button>
+                    </div>
+                  </section>
+                </section>
+              ) : null}
+
+              {adminSection === 'cutoffs' ? (
+                <section className="glass-panel rounded-[1.8rem] p-5 sm:p-6">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">Roki prijave</p>
+                      <h2 className="mt-1 font-[var(--font-display)] text-2xl font-bold">
+                        {getLocalizedText(selectedOfferDay.label, language)} - {getMealPeriodLabel(activeMealPeriod, language)}
+                      </h2>
+                      <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+                        Splošni rok velja za dneve brez izjeme. Izjema spodaj velja samo za trenutno izbran dan in termin.
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm font-semibold text-orange-900">
+                      Trenutno velja: {formatCutoffTime(selectedDayCutoff)}
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid gap-4 md:grid-cols-2">
+                    <label className="block rounded-[1rem] border border-[var(--line)] bg-white/70 p-4">
+                      <span className="block text-sm font-semibold text-[var(--foreground)]">Splošni rok za teden</span>
+                      <span className="mt-1 block text-sm leading-6 text-[var(--muted)]">
+                        Uporabi se za vse dni in termine, ki nimajo svoje izjeme.
+                      </span>
+                      <input
+                        type="time"
+                        value={formatCutoffTime(defaultCutoffTime)}
+                        onChange={(event) => updateDefaultCutoffTime(event.target.value)}
+                        className="mt-3 w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-base font-semibold outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                      />
+                    </label>
+
+                    <div className="rounded-[1rem] border border-[var(--line)] bg-white/70 p-4">
+                      <label className="block">
+                        <span className="block text-sm font-semibold text-[var(--foreground)]">Izjema za izbran dan</span>
+                        <span className="mt-1 block text-sm leading-6 text-[var(--muted)]">
+                          Nastavi, če želiš ta dan odpreti dlje ali ga zapreti prej.
+                        </span>
+                        <input
+                          type="time"
+                          value={formatCutoffTime(selectedDayCutoff)}
+                          onChange={(event) => updateSelectedDayCutoffOverride(event.target.value)}
+                          className="mt-3 w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-base font-semibold outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                        />
+                      </label>
+                      <div className="mt-3 flex flex-wrap items-center gap-3">
+                        <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">
+                          {selectedDayCutoffOverride ? 'Ročna izjema' : 'Brez ročne izjeme'}
+                        </span>
+                        {selectedDayCutoffOverride ? (
+                          <button
+                            type="button"
+                            onClick={removeSelectedDayCutoffOverride}
+                            className="rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm font-semibold transition hover:bg-orange-50"
+                          >
+                            Odstrani izjemo
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={saveCutoffSettings}
+                      disabled={isSavingOffer}
+                      className="rounded-2xl bg-[var(--accent)] px-5 py-3 font-semibold text-white transition hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-stone-300"
+                    >
+                      {isSavingOffer ? 'Shranjujem...' : 'Shrani roke prijave'}
+                    </button>
+                  </div>
+                </section>
+              ) : null}
+
+              {adminSection === 'always' ? (
+                <section className="glass-panel rounded-[1.8rem] p-5 sm:p-6">
+                  <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
+                    {t.categoryLabels['stalna ponudba']}
+                  </p>
+                  <h2 className="mt-1 font-[var(--font-display)] text-2xl font-bold">
+                    {t.manualEntry} - {getMealPeriodLabel(activeMealPeriod, language)}
+                    {selectedDayAlwaysAvailableScopeDate ? ` - ${getLocalizedText(selectedOfferDay.label, language)}` : ''}
+                  </h2>
+                  <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+                    {selectedDayAlwaysAvailableScopeDate
+                      ? 'Ločeno upravljanje sobotne stalne ponudbe. Te jedi so prikazane samo za izbrano soboto.'
+                      : 'Ločeno upravljanje stalne ponudbe za izbran termin. Te jedi so vedno prikazane uporabnikom znotraj tega termina.'}
+                  </p>
+                  <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {alwaysAvailableDraft
+                      .filter(
+                        (item) =>
+                          item.mealPeriod === activeMealPeriod &&
+                          (item.serviceDate ?? undefined) === selectedDayAlwaysAvailableScopeDate
+                      )
+                      .map((item) => (
+                        <div key={item.id} className="rounded-[1.1rem] border border-[var(--line)] bg-white/75 p-4">
+                          {item.isEditing ? (
+                            <div className="space-y-4">
+                              <LocalizedFieldsEditor
+                                label={t.mealTitle}
+                                value={item.title}
+                                placeholder={t.mealPlaceholder}
+                                t={t}
+                                onAutoTranslate={(nextValue) => autoTranslateAlwaysAvailableField(item.id, 'title', nextValue)}
+                                onChange={(fieldLanguage, nextValue) =>
+                                  updateAlwaysAvailableDraft(item.id, 'title', nextValue, fieldLanguage)
+                                }
+                              />
+                              <LocalizedFieldsEditor
+                                label={t.description}
+                                value={item.description}
+                                placeholder={t.optional}
+                                t={t}
+                                onAutoTranslate={(nextValue) =>
+                                  autoTranslateAlwaysAvailableField(item.id, 'description', nextValue)
+                                }
+                                onChange={(fieldLanguage, nextValue) =>
+                                  updateAlwaysAvailableDraft(item.id, 'description', nextValue, fieldLanguage)
+                                }
+                              />
+                              <input
+                                value={item.allergens}
+                                onChange={(event) => updateAlwaysAvailableDraft(item.id, 'allergens', event.target.value)}
+                                placeholder={t.allergens}
+                                className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+                              />
+                            </div>
+                          ) : (
+                            <div className="space-y-4">
+                              <LocalizedFieldsPreview label={t.mealTitle} value={item.title} t={t} />
+                              {item.description.sl || item.description.en || item.description.uk || item.description.bs ? (
+                                <LocalizedFieldsPreview label={t.description} value={item.description} t={t} />
+                              ) : null}
+                              {item.allergens ? (
+                                <p className="text-sm text-[var(--muted)]">
+                                  {t.allergens}: {item.allergens}
+                                </p>
+                              ) : null}
+                            </div>
+                          )}
+                          <div className="mt-4 flex gap-3">
+                            <button
+                              onClick={() => setAlwaysAvailableEditing(item.id, !item.isEditing)}
+                              className="rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm font-semibold transition hover:bg-orange-50"
+                            >
+                              {item.isEditing ? t.saveDraft : t.edit}
+                            </button>
+                            <button
+                              onClick={() => removeAlwaysAvailableDraft(item.id)}
+                              className="rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm font-semibold transition hover:bg-orange-50"
+                            >
+                              {t.remove}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                  <div className="mt-5 flex flex-wrap gap-3">
+                    <button
+                      onClick={addAlwaysAvailableDraftRow}
+                      className="rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold transition hover:bg-orange-50"
+                    >
+                      Dodaj vrstico
+                    </button>
+                    <button
+                      onClick={saveAlwaysAvailable}
+                      disabled={isSavingOffer}
+                      className="rounded-2xl bg-[var(--accent)] px-5 py-3 font-semibold text-white transition hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-stone-300"
+                    >
+                      {isSavingOffer ? 'Shranjujem...' : 'Shrani stalno ponudbo'}
+                    </button>
+                  </div>
+                </section>
+              ) : null}
+
+              {adminSection === 'week' ? (
+                <section className="glass-panel rounded-[1.8rem] p-5 sm:p-6">
+                  <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">Novi teden</p>
+                  <h2 className="mt-1 font-[var(--font-display)] text-2xl font-bold">Priprava naslednjega tedna</h2>
+                  <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+                    Ustvari nov aktiven teden. Prejsnji ostane shranjen v arhivu, uporabniki pa bodo videli samo novega.
+                  </p>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <label className="block">
+                      <span className="mb-2 block text-sm font-medium text-[var(--muted)]">Zacetek tedna</span>
+                      <input
+                        type="date"
+                        value={newWeekStart}
+                        onChange={(event) => setNewWeekStart(event.target.value)}
+                        className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block text-sm font-medium text-[var(--muted)]">Vir ponudbe</span>
+                      <input
+                        value={newWeekSource}
+                        onChange={(event) => setNewWeekSource(event.target.value)}
+                        placeholder="npr. Excel ponudba 6.4.-10.4.2026"
+                        className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                      />
+                    </label>
+                  </div>
+                  <label className="mt-4 flex items-center gap-3 rounded-2xl border border-[var(--line)] bg-white/70 px-4 py-3 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={copyAlwaysAvailableToNewWeek}
+                      onChange={(event) => setCopyAlwaysAvailableToNewWeek(event.target.checked)}
+                    />
+                    <span>Prenesi stalno ponudbo v novi teden</span>
+                  </label>
+                  <div className="mt-5">
+                    <button
+                      onClick={() => setIsConfirmingNewWeek(true)}
+                      className="rounded-2xl bg-[var(--accent)] px-5 py-3 font-semibold text-white transition hover:bg-[var(--accent-strong)]"
+                    >
+                      Ustvari nov teden
+                    </button>
+                  </div>
+                </section>
+              ) : null}
+
+              {adminSection === 'users' ? (
+                <section className="glass-panel rounded-[1.8rem] p-5 sm:p-6">
+                  <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
+                    Uporabniki
+                  </p>
+                  <h2 className="mt-1 font-[var(--font-display)] text-2xl font-bold">
+                    Prikazna imena in nicki
+                  </h2>
+                  <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+                    Username ostane enak za prijavo. Tukaj mu dodaš ime ali nickname, ki se potem kaže v admin pregledu in v aplikaciji.
+                  </p>
+                  <div className="mt-5 rounded-[1.2rem] border border-[var(--line)] bg-[var(--accent-soft)]/40 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                      Nov uporabnik
+                    </p>
+                    <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                      <label className="block">
+                        <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                          Username
+                        </span>
+                        <input
+                          value={newUserUsername}
+                          onChange={(event) => setNewUserUsername(event.target.value)}
+                          className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                          Password
+                        </span>
+                        <input
+                          value={newUserPassword}
+                          onChange={(event) => setNewUserPassword(event.target.value)}
+                          className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                          Ime
+                        </span>
+                        <input
+                          value={newUserFullName}
+                          onChange={(event) => setNewUserFullName(event.target.value)}
+                          className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                          Oddelek
+                        </span>
+                        <select
+                          value={newUserDepartment}
+                          onChange={(event) => setNewUserDepartment(event.target.value as 'Delavnica' | 'Pisarne')}
+                          className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                        >
+                          <option value="Delavnica">Delavnica</option>
+                          <option value="Pisarne">Pisarne</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div className="mt-4">
+                      <button
+                        type="button"
+                        onClick={() => void createAdminUser()}
+                        disabled={isCreatingUser}
+                        className="rounded-2xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-stone-300"
+                      >
+                        {isCreatingUser ? 'Dodajam...' : 'Dodaj uporabnika'}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-5 grid gap-3">
+                    <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/75 px-4 py-3 text-sm text-[var(--muted)]">
+                      Urejanje prikaznega imena je omogočeno za vse uporabnike, ki imajo v username `delavec`.
+                    </div>
+                    {usersForAdminEdit.map((user) => (
+                      <div key={user.id} className="rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4">
+                        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,420px)_auto] lg:items-end">
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                              Username
+                            </p>
+                            <p className="mt-1 font-semibold">{user.username}</p>
+                            <p className="mt-1 text-sm text-[var(--muted)]">{normalizeDepartmentName(user.department)}</p>
+                          </div>
+                          <label className="block">
+                            <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                              Prikazno ime / nickname
+                            </span>
+                            <input
+                              value={userNameDrafts[user.id] ?? ''}
+                              onChange={(event) =>
+                                setUserNameDrafts((current) => ({
+                                  ...current,
+                                  [user.id]: event.target.value,
+                                }))
+                              }
+                              placeholder={user.username}
+                              className="w-full rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-4 focus:ring-orange-100"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => void saveUserDisplayName(user.id)}
+                            disabled={isSavingUserProfile}
+                            className="rounded-2xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-stone-300"
+                          >
+                            Shrani
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+            </div>
+          </section>
+
+          {message ? <MessageBox message={message} className="glass-panel rounded-[1.5rem]" /> : null}
+          {pendingAdminOrderRemoval?.step === 1 ? (
+            <ConfirmModal
+              title="Potrdi odstranitev prijave"
+              body={`Ali res želiš odstraniti ${pendingAdminOrderRemoval.userName} iz malice "${pendingAdminOrderRemoval.mealTitle}" za ta dan?`}
+              cancelLabel={t.cancel}
+              confirmLabel="Da, nadaljuj"
+              onCancel={() => setPendingAdminOrderRemoval(null)}
+              onConfirm={() =>
+                setPendingAdminOrderRemoval((current) =>
+                  current ? { ...current, step: 2 } : current
+                )
+              }
+            />
+          ) : null}
+          {pendingAdminOrderRemoval?.step === 2 ? (
+            <ConfirmModal
+              title="Res odstranim prijavo?"
+              body={`Zadnja potrditev: odstranim ${pendingAdminOrderRemoval.userName} iz malice za ${formatDate(pendingAdminOrderRemoval.date, language)}?`}
+              cancelLabel={t.cancel}
+              confirmLabel={isSavingOrder ? 'Odstranjujem...' : 'Da, odstrani'}
+              isConfirming={isSavingOrder}
+              onCancel={() => setPendingAdminOrderRemoval(null)}
+              onConfirm={() => void removeAdminOrder(pendingAdminOrderRemoval)}
+            />
+          ) : null}
+        </div>
+      </main>
+    )
+  }
+
   return (
     <main className="page-shell warm-grid min-h-screen px-4 py-6 sm:px-6 lg:px-8">
       <div className="relative z-10 mx-auto flex w-full max-w-7xl flex-col gap-6">
@@ -1796,7 +2945,7 @@ export default function Home() {
                 <LanguageSwitcher language={language} setLanguage={setLanguage} />
               </div>
               <p className="mt-3 max-w-3xl text-sm leading-6 text-[var(--muted)] sm:text-base">
-                {loggedInUser.role === 'admin' ? t.adminIntro : t.employeeIntro}
+                {t.employeeIntro}
               </p>
               <p className="mt-2 text-sm text-[var(--muted)]">
                 {t.weekSourceIntro}: {getLocalizedText(weeklyOffer.sourceLabel, language)}
@@ -1837,13 +2986,7 @@ export default function Home() {
           </div>
         </section>
 
-        {loggedInUser.role === 'admin' && adminIdleSecondsLeft !== null ? (
-          <div className="rounded-[1.5rem] border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
-            Admin seja bo zaradi neaktivnosti potekla cez {Math.ceil(adminIdleSecondsLeft / 60)} min.
-          </div>
-        ) : null}
-
-        <section className={`grid gap-6 ${loggedInUser.role === 'admin' ? '' : 'lg:grid-cols-[0.42fr_0.58fr]'}`}>
+        <section className="grid gap-6 lg:grid-cols-[0.42fr_0.58fr]">
           {shouldChooseMealPeriod ? (
             <section className="glass-panel rounded-[2rem] p-5 sm:p-6 lg:col-span-2">
               <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
@@ -1883,7 +3026,7 @@ export default function Home() {
             <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
               {t.days}
             </p>
-            <div className={`mt-4 ${loggedInUser.role === 'admin' ? 'grid gap-3 sm:grid-cols-2 lg:grid-cols-5' : 'space-y-3'}`}>
+            <div className="mt-4 space-y-3">
               {visibleOfferDays.map((day) => {
                 const dayCutoff = getCutoffTimeForDay(day.date, activeMealPeriod, weeklyOffer)
                 const locked = isLocked(day.date, dayCutoff, now)
@@ -1968,7 +3111,7 @@ export default function Home() {
                   <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
                     <label className="block w-full sm:max-w-xs">
                       <span className="mb-2 block text-sm font-medium text-[var(--muted)]">
-                        {loggedInUser.role === 'admin' ? 'Termin ponudbe' : 'Termin naročanja'}
+                        Termin naročanja
                       </span>
                       <select
                         value={activeMealPeriod}
@@ -1983,7 +3126,7 @@ export default function Home() {
                       </select>
                     </label>
                     <div className="rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm font-semibold text-orange-900">
-                      {loggedInUser.role === 'admin' ? 'Pregleduješ' : 'Naročaš'}: {getMealPeriodLabel(activeMealPeriod, language)}
+                      Naročaš: {getMealPeriodLabel(activeMealPeriod, language)}
                     </div>
                   </div>
                 </div>
@@ -2056,7 +3199,7 @@ export default function Home() {
               </div>
             </section>
 
-            {loggedInUser.role === 'admin' ? (
+            {false ? (
               <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
                 <div className="printable-order-card glass-panel rounded-[1.5rem] p-4 sm:p-5 xl:col-span-2">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -2064,98 +3207,174 @@ export default function Home() {
                       <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
                         {t.adminOverview}
                       </p>
-                      <h3 className="mt-1 font-[var(--font-display)] text-2xl font-bold">
-                        {t.whoOrdered} - {getLocalizedText(selectedOfferDay.label, language)} - {getMealPeriodLabel(activeMealPeriod, language)}
-                      </h3>
-                      <p className="mt-2 text-sm text-[var(--muted)]">
+                      <h3 className="mt-1 font-[var(--font-display)] text-2xl font-bold">Nadzorna plošča prijav</h3>
+                      <p className="mt-2 text-sm font-semibold text-[var(--foreground)]">{adminScopeLabel}</p>
+                      <p className="mt-1 text-sm text-[var(--muted)]">
                         {formatDate(selectedOfferDay.date, language)}
                       </p>
                     </div>
-                    <div className="print-hide flex flex-col gap-2 sm:flex-row lg:items-center">
-                      {(['Pisarne', 'Delavnica'] as PrintDepartment[]).map((department) => (
-                        <button
-                          key={department}
-                          type="button"
-                          onClick={() => setPrintDepartment(department)}
-                          className={`rounded-2xl border px-4 py-2.5 text-sm font-semibold transition ${
-                            printDepartment === department
-                              ? 'border-orange-300 bg-orange-50 text-orange-900'
-                              : 'border-[var(--line)] bg-white text-[var(--foreground)] hover:bg-orange-50'
-                          }`}
-                        >
-                          {department}
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        onClick={() => printOrdersCard(printDepartment)}
-                        className="rounded-2xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[var(--accent-strong)]"
-                      >
-                        Tiskaj
-                      </button>
+                    <div className="print-hide rounded-[1.2rem] border border-[var(--line)] bg-white/80 px-4 py-3 text-sm">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                        Rok prijave
+                      </p>
+                      <p className="mt-1 font-semibold">{formatCutoffTime(selectedDayCutoff)}</p>
+                      <p className="mt-1 text-[var(--muted)]">
+                        {isSelectedDayLocked ? t.orderingClosed : t.orderingOpen}
+                      </p>
                     </div>
                   </div>
-                  {adminDepartmentSummary.length > 0 ? (
-                    <div className="print-hide mt-4 grid gap-3 sm:grid-cols-3">
-                      {adminDepartmentSummary.map(({ department, total }) => (
-                        <div key={department} className="rounded-[1rem] border border-[var(--line)] bg-white px-4 py-3">
-                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
-                            {department}
-                          </p>
-                          <p className="mt-1 font-[var(--font-display)] text-2xl font-semibold">{total}</p>
-                        </div>
-                      ))}
+
+                  <div className="print-hide mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-[1.2rem] border border-[var(--line)] bg-white px-4 py-4">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                        Skupaj prijav
+                      </p>
+                      <p className="mt-2 font-[var(--font-display)] text-3xl font-semibold">{adminTotalOrders}</p>
+                      <p className="mt-1 text-sm text-[var(--muted)]">Za izbran dan in termin</p>
                     </div>
-                  ) : null}
-                  <div className="mt-4 max-h-[520px] space-y-3 overflow-y-auto pr-1 print:max-h-none print:overflow-visible print:pr-0">
-                    {adminByDepartment.length === 0 ? (
-                      <div className="rounded-[1rem] border border-[var(--line)] bg-white/70 p-4 text-sm text-[var(--muted)]">
-                        {t.noOrders}
-                      </div>
-                    ) : (
-                      adminByDepartment.map(([department, meals]) => (
-                        <div
-                          key={department}
-                          className={`rounded-[1.1rem] border border-[var(--line)] bg-white/75 p-4 ${
-                            department === printDepartment ? '' : 'print-department-hidden'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-4">
-                            <p className="font-[var(--font-display)] text-xl font-semibold">{department}</p>
-                            <span className="rounded-full bg-orange-100 px-3 py-1 text-sm font-semibold text-orange-800">
-                              {meals.reduce((sum, meal) => sum + meal.people.length, 0)}
-                            </span>
-                          </div>
-                          <div className="mt-4 space-y-4">
-                            {meals.map(({ item, people }) => (
-                              <div key={`${department}-${item.id}`} className="rounded-[1rem] border border-[var(--line)] bg-white p-4">
-                                <div className="flex items-start justify-between gap-4">
-                                  <div>
-                                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
-                                      {t.categoryLabels[item.category]}
-                                    </p>
-                                    <p className="mt-2 font-[var(--font-display)] text-lg font-semibold">
-                                      {getLocalizedText(item.title, language)}
-                                    </p>
-                                  </div>
-                                  <span className="rounded-full border border-[var(--line)] bg-orange-50 px-3 py-1 text-sm font-semibold text-orange-800">
-                                    {people.length}
-                                  </span>
-                                </div>
-                                <div className="mt-4 flex flex-wrap gap-2">
-                                  {people.map(({ user, note }) => (
-                                    <span key={user.id} className="rounded-full border border-[var(--line)] bg-white px-3 py-1.5 text-sm">
-                                      {user.fullName}
-                                      {note ? ` (${note})` : ''}
-                                    </span>
-                                  ))}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
+                    <div className="rounded-[1.2rem] border border-[var(--line)] bg-white px-4 py-4">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                        Brez prijave
+                      </p>
+                      <p className="mt-2 font-[var(--font-display)] text-3xl font-semibold">{adminPendingOrders}</p>
+                      <p className="mt-1 text-sm text-[var(--muted)]">Od {adminEligibleEmployees.length} možnih uporabnikov</p>
+                    </div>
+                    <div className="rounded-[1.2rem] border border-[var(--line)] bg-white px-4 py-4">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                        Meniji v ponudbi
+                      </p>
+                      <p className="mt-2 font-[var(--font-display)] text-3xl font-semibold">{mergedItems.length}</p>
+                      <p className="mt-1 text-sm text-[var(--muted)]">Vidne izbire za ta pregled</p>
+                    </div>
+                    <div className="rounded-[1.2rem] border border-[var(--line)] bg-white px-4 py-4">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                        Najbolj izbrano
+                      </p>
+                      <p className="mt-2 line-clamp-2 font-semibold">
+                        {adminTopMeal ? getLocalizedText(adminTopMeal.item.title, language) : 'Ni prijav'}
+                      </p>
+                      <p className="mt-1 text-sm text-[var(--muted)]">
+                        {adminTopMeal ? `${adminTopMeal.people.length} prijav` : 'Trenutno brez naročil'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
+                    <div className="print-hide space-y-4">
+                      <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                          Oddelki
+                        </p>
+                        <div className="mt-3 space-y-2">
+                          {(['Pisarne', 'Delavnica'] as PrintDepartment[]).map((department) => {
+                            const total = adminDepartmentSummary.find((entry) => entry.department === department)?.total ?? 0
+
+                            return (
+                              <button
+                                key={department}
+                                type="button"
+                                onClick={() => setPrintDepartment(department)}
+                                className={`flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-left text-sm font-semibold transition ${
+                                  printDepartment === department
+                                    ? 'border-orange-300 bg-orange-50 text-orange-900'
+                                    : 'border-[var(--line)] bg-white text-[var(--foreground)] hover:bg-orange-50'
+                                }`}
+                              >
+                                <span>{department}</span>
+                                <span className="rounded-full bg-white/90 px-2.5 py-1 text-xs">{total}</span>
+                              </button>
+                            )
+                          })}
                         </div>
-                      ))
-                    )}
+                        <button
+                          type="button"
+                          onClick={() => printOrdersCard(printDepartment)}
+                          className="mt-4 w-full rounded-2xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[var(--accent-strong)]"
+                        >
+                          Tiskaj izbrani oddelek
+                        </button>
+                      </div>
+
+                      <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                          Povzetek oddelkov
+                        </p>
+                        <div className="mt-3 space-y-2">
+                          {adminDepartmentSummary.length > 0 ? (
+                            adminDepartmentSummary.map(({ department, total }) => (
+                              <div key={department} className="flex items-center justify-between rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm">
+                                <span className="font-semibold">{department}</span>
+                                <span className="rounded-full bg-orange-100 px-2.5 py-1 text-xs font-semibold text-orange-800">
+                                  {total}
+                                </span>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-sm text-[var(--muted)]">
+                              Zaenkrat ni prijav.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="max-h-[620px] space-y-4 overflow-y-auto pr-1 print:max-h-none print:overflow-visible print:pr-0">
+                      {adminByDepartment.length === 0 ? (
+                        <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/75 p-5 text-sm text-[var(--muted)]">
+                          {t.noOrders}
+                        </div>
+                      ) : (
+                        adminByDepartment.map(([department, meals]) => (
+                          <div
+                            key={department}
+                            className={`rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4 ${
+                              department === printDepartment ? '' : 'print-department-hidden'
+                            }`}
+                          >
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                              <div>
+                                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                                  Oddelek
+                                </p>
+                                <h4 className="mt-1 font-[var(--font-display)] text-2xl font-semibold">{department}</h4>
+                              </div>
+                              <div className="rounded-2xl border border-orange-200 bg-orange-50 px-4 py-2 text-sm font-semibold text-orange-900">
+                                {meals.reduce((sum, meal) => sum + meal.people.length, 0)} prijav
+                              </div>
+                            </div>
+
+                            <div className="mt-4 grid gap-3">
+                              {meals.map(({ item, people }) => (
+                                <div key={`${department}-${item.id}`} className="rounded-[1rem] border border-[var(--line)] bg-white p-4">
+                                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                    <div>
+                                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                                        {t.categoryLabels[item.category]}
+                                      </p>
+                                      <p className="mt-2 font-[var(--font-display)] text-lg font-semibold">
+                                        {getLocalizedText(item.title, language)}
+                                      </p>
+                                    </div>
+                                    <div className="rounded-full border border-[var(--line)] bg-orange-50 px-3 py-1 text-sm font-semibold text-orange-800">
+                                      {people.length} prijav
+                                    </div>
+                                  </div>
+                                  <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                                    {people.map(({ user, note }) => (
+                                      <div key={user.id} className="rounded-2xl border border-[var(--line)] bg-[var(--accent-soft)] px-3 py-2 text-sm">
+                                        <p className="font-semibold">{user.fullName}</p>
+                                        <p className="text-[var(--muted)]">{user.username}</p>
+                                        {note ? <p className="mt-1 text-xs text-[var(--muted)]">Opomba: {note}</p> : null}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -2293,9 +3512,9 @@ export default function Home() {
           )}
         </section>
 
-        {selectedMealPeriod || loggedInUser.role === 'admin' ? (
+        {selectedMealPeriod ? (
           <div className="space-y-6">
-            {loggedInUser.role === 'admin' ? (
+            {false ? (
               <section className="glass-panel rounded-[1.5rem] p-4 sm:p-5">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                   <div>
@@ -2329,7 +3548,7 @@ export default function Home() {
               </section>
             ) : null}
 
-            {loggedInUser.role === 'admin' ? (
+            {false ? (
               <section className="glass-panel rounded-[1.5rem] p-4 sm:p-5">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div>
@@ -2409,7 +3628,7 @@ export default function Home() {
               </section>
             ) : null}
 
-            {loggedInUser.role === 'admin' ? (
+            {false ? (
               <section className="glass-panel rounded-[1.5rem] p-4 sm:p-5">
                 <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent-strong)]">
                   {t.categoryLabels['stalna ponudba']}
@@ -2553,6 +3772,31 @@ export default function Home() {
             }}
           />
         ) : null}
+        {pendingAdminOrderRemoval?.step === 1 ? (
+          <ConfirmModal
+            title="Potrdi odstranitev prijave"
+            body={`Ali res želiš odstraniti ${pendingAdminOrderRemoval.userName} iz malice "${pendingAdminOrderRemoval.mealTitle}" za ta dan?`}
+            cancelLabel={t.cancel}
+            confirmLabel="Da, nadaljuj"
+            onCancel={() => setPendingAdminOrderRemoval(null)}
+            onConfirm={() =>
+              setPendingAdminOrderRemoval((current) =>
+                current ? { ...current, step: 2 } : current
+              )
+            }
+          />
+        ) : null}
+        {pendingAdminOrderRemoval?.step === 2 ? (
+          <ConfirmModal
+            title="Res odstranim prijavo?"
+            body={`Zadnja potrditev: odstranim ${pendingAdminOrderRemoval.userName} iz malice za ${formatDate(pendingAdminOrderRemoval.date, language)}?`}
+            cancelLabel={t.cancel}
+            confirmLabel={isSavingOrder ? 'Odstranjujem...' : 'Da, odstrani'}
+            isConfirming={isSavingOrder}
+            onCancel={() => setPendingAdminOrderRemoval(null)}
+            onConfirm={() => void removeAdminOrder(pendingAdminOrderRemoval)}
+          />
+        ) : null}
         {isConfirmingNewWeek ? (
           <ConfirmModal
             title="Potrdi nov teden"
@@ -2667,7 +3911,7 @@ function GridRow({
         const isEditing = editingCells[cellKey] ?? !value.sl
 
         return (
-          <div key={cellKey} className="rounded-2xl border border-[var(--line)] bg-white/75 p-3">
+          <div key={cellKey} className="flex min-w-0 flex-col rounded-2xl border border-[var(--line)] bg-white/75 p-3">
             {isEditing ? (
               <LocalizedFieldsEditor
                 label={categoryLabel}
@@ -2704,7 +3948,7 @@ function GridRow({
               <LocalizedFieldsPreview label={categoryLabel} value={value} t={t} />
             )}
 
-            <div className="mt-3 flex justify-end">
+            <div className="mt-3 flex justify-end border-t border-[var(--line)] pt-3">
               {isEditing ? (
                 <button
                   onClick={() =>
@@ -2753,32 +3997,49 @@ function LocalizedFieldsEditor({
   onAutoTranslate?: (value: string) => void | Promise<void>
   onChange: (language: Language, value: string) => void
 }) {
-  const languages: Language[] = ['sl', 'en', 'uk', 'bs']
+  const translationLanguages: Language[] = ['en', 'uk', 'bs']
 
   return (
-    <div className="space-y-3">
+    <div className="min-w-0 space-y-3">
       <p className="text-sm font-semibold text-[var(--foreground)]">{label}</p>
-      <div className="grid gap-3">
-        {languages.map((language) => (
-          <label key={language} className="block">
-            <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
-              {t.languages[language]}
-            </span>
-            <textarea
-              value={value[language]}
-              onChange={(event) => onChange(language, event.target.value)}
-              onBlur={(event) => {
-                if (language === 'sl' && onAutoTranslate) {
-                  void onAutoTranslate(event.target.value)
-                }
-              }}
-              rows={language === 'sl' ? 3 : 2}
-              className="min-h-[72px] w-full resize-y rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
-              placeholder={placeholder}
-            />
-          </label>
-        ))}
-      </div>
+      <label className="block">
+        <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+          {t.languages.sl}
+        </span>
+        <textarea
+          value={value.sl}
+          onChange={(event) => onChange('sl', event.target.value)}
+          onBlur={(event) => {
+            if (onAutoTranslate) {
+              void onAutoTranslate(event.target.value)
+            }
+          }}
+          rows={4}
+          className="min-h-[96px] w-full resize-y rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--accent)]"
+          placeholder={placeholder}
+        />
+      </label>
+      <details className="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)]/40 px-3 py-3">
+        <summary className="cursor-pointer text-sm font-semibold text-[var(--foreground)]">
+          Tuji jeziki
+        </summary>
+        <div className="mt-3 grid gap-3">
+          {translationLanguages.map((language) => (
+            <label key={language} className="block">
+              <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                {t.languages[language]}
+              </span>
+              <textarea
+                value={value[language]}
+                onChange={(event) => onChange(language, event.target.value)}
+                rows={2}
+                className="min-h-[72px] w-full resize-y rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--accent)]"
+                placeholder={placeholder}
+              />
+            </label>
+          ))}
+        </div>
+      </details>
     </div>
   )
 }
@@ -2792,21 +4053,37 @@ function LocalizedFieldsPreview({
   value: LocalizedText
   t: (typeof translations)[Language]
 }) {
-  const languages: Language[] = ['sl', 'en', 'uk', 'bs']
+  const translationLanguages: Language[] = ['en', 'uk', 'bs']
+  const hasTranslations = translationLanguages.some((language) => value[language])
 
   return (
-    <div className="min-h-[112px] space-y-3">
+    <div className="min-h-[112px] min-w-0 space-y-3">
       <p className="text-sm font-semibold text-[var(--foreground)]">{label}</p>
-      {languages.map((language) =>
-        value[language] ? (
-          <div key={language}>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
-              {t.languages[language]}
-            </p>
-            <p className="mt-1 text-sm leading-6">{value[language]}</p>
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+          {t.languages.sl}
+        </p>
+        <p className="mt-1 break-words text-sm leading-6">{value.sl || '-'}</p>
+      </div>
+      {hasTranslations ? (
+        <details className="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)]/35 px-3 py-3">
+          <summary className="cursor-pointer text-sm font-semibold text-[var(--foreground)]">
+            Prikaži prevode
+          </summary>
+          <div className="mt-3 space-y-3">
+            {translationLanguages.map((language) =>
+              value[language] ? (
+                <div key={language}>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent-strong)]">
+                    {t.languages[language]}
+                  </p>
+                  <p className="mt-1 break-words text-sm leading-6">{value[language]}</p>
+                </div>
+              ) : null
+            )}
           </div>
-        ) : null
-      )}
+        </details>
+      ) : null}
     </div>
   )
 }

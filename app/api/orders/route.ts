@@ -39,21 +39,115 @@ async function writeOrderAuditLog(
   })
 }
 
+async function getActor(
+  supabase: ReturnType<typeof getSupabaseServerClient>,
+  actorUserId: string | undefined
+) {
+  if (!actorUserId) {
+    return null
+  }
+
+  const { data, error } = await supabase
+    .from('users')
+    .select('id,username,role')
+    .eq('id', actorUserId)
+    .maybeSingle()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+async function removeOrderRecord(
+  supabase: ReturnType<typeof getSupabaseServerClient>,
+  body: {
+    serviceDate?: string
+    userId?: string
+    mealPeriod?: MealPeriod
+    actorUserId?: string
+  }
+) {
+  if (!body.serviceDate || !body.userId || !isMealPeriod(body.mealPeriod)) {
+    return NextResponse.json({ error: 'Missing order payload.' }, { status: 400 })
+  }
+
+  const actor = await getActor(supabase, body.actorUserId)
+  const { data: user, error: userError } = await supabase
+    .from('users')
+    .select('id,username,role')
+    .eq('id', body.userId)
+    .maybeSingle()
+
+  if (userError) {
+    throw userError
+  }
+
+  if (!user) {
+    return NextResponse.json({ error: 'Uporabnik ne obstaja vec.' }, { status: 400 })
+  }
+
+  if (actor && actor.role !== 'admin' && actor.id !== user.id) {
+    return NextResponse.json({ error: 'Nimas dovoljenja za to odjavo.' }, { status: 403 })
+  }
+
+  let deleteQuery = supabase
+    .from('orders')
+    .delete()
+    .eq('service_date', body.serviceDate)
+    .eq('user_id', body.userId)
+
+  if (body.mealPeriod === 'morning') {
+    deleteQuery = deleteQuery.or('meal_period.eq.morning,meal_period.is.null')
+  } else {
+    deleteQuery = deleteQuery.eq('meal_period', body.mealPeriod)
+  }
+
+  const { error } = await deleteQuery
+
+  if (error) {
+    throw error
+  }
+
+  await writeOrderAuditLog(supabase, {
+    actor: actor ?? user,
+    action: 'remove_order',
+    metadata: {
+      serviceDate: body.serviceDate,
+      mealPeriod: body.mealPeriod,
+      targetUserId: user.id,
+      targetUsername: user.username,
+      manualEntry: Boolean(actor && actor.id !== user.id),
+    },
+  })
+
+  return NextResponse.json({ ok: true })
+}
+
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
+      action?: 'place' | 'remove'
       serviceDate?: string
       userId?: string
       mealItemId?: string
       mealPeriod?: MealPeriod
       note?: string
+      actorUserId?: string
+    }
+
+    const supabase = getSupabaseServerClient()
+
+    if (body.action === 'remove') {
+      return await removeOrderRecord(supabase, body)
     }
 
     if (!body.serviceDate || !body.userId || !body.mealItemId || !isMealPeriod(body.mealPeriod)) {
       return NextResponse.json({ error: 'Missing order payload.' }, { status: 400 })
     }
 
-    const supabase = getSupabaseServerClient()
+    const actor = await getActor(supabase, body.actorUserId)
     const { data: user, error: userError } = await supabase
       .from('users')
       .select('id,username,department,role')
@@ -66,6 +160,10 @@ export async function POST(request: Request) {
 
     if (!user) {
       return NextResponse.json({ error: 'Uporabnik ne obstaja vec.' }, { status: 400 })
+    }
+
+    if (actor && actor.role !== 'admin' && actor.id !== user.id) {
+      return NextResponse.json({ error: 'Nimas dovoljenja za ta vnos.' }, { status: 403 })
     }
 
     if (body.mealPeriod === 'afternoon' && user.role !== 'admin' && normalizeDepartmentName(user.department) !== 'Delavnica') {
@@ -108,13 +206,16 @@ export async function POST(request: Request) {
     }
 
     await writeOrderAuditLog(supabase, {
-      actor: user,
+      actor: actor ?? user,
       action: 'place_order',
       metadata: {
         serviceDate: body.serviceDate,
         mealItemId: body.mealItemId,
         mealPeriod: body.mealPeriod,
         hasNote: Boolean(body.note?.trim()),
+        targetUserId: user.id,
+        targetUsername: user.username,
+        manualEntry: Boolean(actor && actor.id !== user.id),
       },
     })
 
@@ -131,48 +232,11 @@ export async function DELETE(request: Request) {
       serviceDate?: string
       userId?: string
       mealPeriod?: MealPeriod
-    }
-
-    if (!body.serviceDate || !body.userId || !isMealPeriod(body.mealPeriod)) {
-      return NextResponse.json({ error: 'Missing order payload.' }, { status: 400 })
+      actorUserId?: string
     }
 
     const supabase = getSupabaseServerClient()
-    const { data: user, error: userError } = await supabase
-      .from('users')
-      .select('id,username,role')
-      .eq('id', body.userId)
-      .maybeSingle()
-
-    if (userError) {
-      throw userError
-    }
-
-    if (!user) {
-      return NextResponse.json({ error: 'Uporabnik ne obstaja vec.' }, { status: 400 })
-    }
-
-    const { error } = await supabase
-      .from('orders')
-      .delete()
-      .eq('service_date', body.serviceDate)
-      .eq('user_id', body.userId)
-      .eq('meal_period', body.mealPeriod)
-
-    if (error) {
-      throw error
-    }
-
-    await writeOrderAuditLog(supabase, {
-      actor: user,
-      action: 'remove_order',
-      metadata: {
-        serviceDate: body.serviceDate,
-        mealPeriod: body.mealPeriod,
-      },
-    })
-
-    return NextResponse.json({ ok: true })
+    return await removeOrderRecord(supabase, body)
   } catch (error) {
     console.error('Deleting order failed.', error)
     return NextResponse.json({ error: 'Odjava malice iz baze ni uspela.' }, { status: 500 })
