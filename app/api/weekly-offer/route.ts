@@ -91,6 +91,14 @@ function addDays(date: string, days: number) {
   return next.toISOString().slice(0, 10)
 }
 
+function getDateOffsetInDays(fromDate: string, toDate: string) {
+  const start = new Date(`${fromDate}T12:00:00`)
+  const end = new Date(`${toDate}T12:00:00`)
+  const diffMs = end.getTime() - start.getTime()
+
+  return Math.round(diffMs / (24 * 60 * 60 * 1000))
+}
+
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
@@ -124,6 +132,26 @@ export async function POST(request: Request) {
       const cutoffHour = body.cutoffHour ?? 10
       const cutoffMinute = body.cutoffMinute ?? 0
 
+      const { data: overlappingOffer, error: overlappingOfferError } = await supabase
+        .from('weekly_offers')
+        .select('id,starts_on,ends_on')
+        .eq('is_active', true)
+        .lte('starts_on', endsOn)
+        .gte('ends_on', startsOn)
+        .limit(1)
+        .maybeSingle()
+
+      if (overlappingOfferError) {
+        throw overlappingOfferError
+      }
+
+      if (overlappingOffer) {
+        return NextResponse.json(
+          { error: `Za obdobje ${startsOn} - ${endsOn} ze obstaja teden ponudbe.` },
+          { status: 409 }
+        )
+      }
+
       const weekLabel = {
         sl: `Tedenska ponudba ${startsOn} - ${endsOn}`,
         en: `Weekly offer ${startsOn} - ${endsOn}`,
@@ -138,13 +166,15 @@ export async function POST(request: Request) {
         bs: 'Ručni unos novog tjedna',
       }
 
-      const { data: currentActiveOffer } = await supabase
+      const { data: activeOffers, error: activeOffersError } = await supabase
         .from('weekly_offers')
-        .select('id')
+        .select('id,starts_on,ends_on')
         .eq('is_active', true)
         .order('starts_on', { ascending: false })
-        .limit(1)
-        .maybeSingle()
+
+      if (activeOffersError) {
+        throw activeOffersError
+      }
 
       let alwaysAvailableItems:
         | Array<{
@@ -158,11 +188,13 @@ export async function POST(request: Request) {
           }>
         = []
 
-      if (body.copyAlwaysAvailable && currentActiveOffer?.id) {
+      if (body.copyAlwaysAvailable && (activeOffers?.length ?? 0) > 0) {
+        const activeOfferIds = activeOffers!.map((offer) => offer.id)
+
         const { data: currentAlwaysItems, error: currentAlwaysItemsError } = await supabase
           .from('meal_items')
-          .select('category,service_date,meal_period,title,description,allergens,sort_order')
-          .eq('offer_id', currentActiveOffer.id)
+          .select('offer_id,category,service_date,meal_period,title,description,allergens,sort_order')
+          .in('offer_id', activeOfferIds)
           .eq('is_always_available', true)
           .order('sort_order')
 
@@ -170,16 +202,30 @@ export async function POST(request: Request) {
           throw currentAlwaysItemsError
         }
 
-        alwaysAvailableItems =
-          currentAlwaysItems?.map((item) => ({
-            category: item.category,
-            service_date: item.service_date,
-            meal_period: item.meal_period ?? 'morning',
-            title: item.title,
-            description: item.description,
-            allergens: item.allergens,
-            sort_order: item.sort_order ?? 100,
-          })) ?? []
+        const sourceOffer = activeOffers!.find((offer) =>
+          (currentAlwaysItems ?? []).some((item) => item.offer_id === offer.id)
+        )
+
+        if (sourceOffer) {
+          alwaysAvailableItems =
+            currentAlwaysItems
+              ?.filter((item) => item.offer_id === sourceOffer.id)
+              .map((item) => {
+                const mappedServiceDate = item.service_date
+                  ? addDays(startsOn, getDateOffsetInDays(sourceOffer.starts_on, item.service_date))
+                  : null
+
+                return {
+                  category: item.category,
+                  service_date: mappedServiceDate,
+                  meal_period: item.meal_period ?? 'morning',
+                  title: item.title,
+                  description: item.description,
+                  allergens: item.allergens,
+                  sort_order: item.sort_order ?? 100,
+                }
+              }) ?? []
+        }
       }
 
       const { data: insertedOffer, error: insertOfferError } = await supabase

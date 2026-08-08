@@ -570,6 +570,17 @@ export default function Home() {
   const shouldChooseMealPeriod =
     loggedInUser?.role === 'employee' && departmentMealPeriods.length > 1 && !selectedMealPeriod
 
+  const getVisibleItemsForDay = (day: WeeklyOffer['days'][number], mealPeriod: MealPeriod) => {
+    const scopeDate = getAlwaysAvailableScopeDate(day.date)
+
+    return [
+      ...day.items.filter((item) => item.mealPeriod === mealPeriod),
+      ...weeklyOffer.alwaysAvailable.filter(
+        (item) => item.mealPeriod === mealPeriod && (item.serviceDate ?? undefined) === scopeDate
+      ),
+    ]
+  }
+
   useEffect(() => {
     if (!loggedInUser || loggedInUser.role !== 'employee') {
       return
@@ -585,17 +596,7 @@ export default function Home() {
     }
   }, [departmentMealPeriods, loggedInUser, selectedMealPeriod])
 
-  const mergedItems = useMemo(
-    () => [
-      ...selectedOfferDay.items.filter((item) => item.mealPeriod === activeMealPeriod),
-      ...weeklyOffer.alwaysAvailable.filter(
-        (item) =>
-          item.mealPeriod === activeMealPeriod &&
-          (item.serviceDate ?? undefined) === selectedDayAlwaysAvailableScopeDate
-      ),
-    ],
-    [activeMealPeriod, selectedDayAlwaysAvailableScopeDate, selectedOfferDay, weeklyOffer.alwaysAvailable]
-  )
+  const mergedItems = getVisibleItemsForDay(selectedOfferDay, activeMealPeriod)
 
   const selectedOrder = loggedInUser ? orders[activeSelectedDay]?.[loggedInUser.id]?.[activeMealPeriod] : undefined
   const selectedOrderId = selectedOrder?.mealItemId
@@ -1887,6 +1888,7 @@ export default function Home() {
                 const dayCutoff = getCutoffTimeForDay(day.date, activeMealPeriod, weeklyOffer)
                 const locked = isLocked(day.date, dayCutoff, now)
                 const dayOrders = getPeriodOrders(orders, day.date, activeMealPeriod).length
+                const availableItemsCount = getVisibleItemsForDay(day, activeMealPeriod).length
                 const userOrder = loggedInUser ? orders[day.date]?.[loggedInUser.id]?.[activeMealPeriod] : undefined
                 const userOrderId = userOrder?.mealItemId
                 const chosenItem = userOrderId
@@ -1918,7 +1920,7 @@ export default function Home() {
                         </span>
                       </div>
                       <p className="mt-3 text-sm text-[var(--muted)]">
-                        {day.items.length + weeklyOffer.alwaysAvailable.length} {t.availableMeals}
+                        {availableItemsCount} {t.availableMeals}
                       </p>
                       <p className="mt-1 text-sm text-[var(--muted)]">
                         {dayOrders} {t.registrationsForDay}
