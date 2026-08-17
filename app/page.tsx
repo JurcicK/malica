@@ -2924,6 +2924,18 @@ export default function Home() {
               onConfirm={() => void removeAdminOrder(pendingAdminOrderRemoval)}
             />
           ) : null}
+          {isConfirmingNewWeek ? (
+            <ConfirmModal
+              title="Potrdi nov teden"
+              body={`To bo ustvarilo nov aktiven teden od ${newWeekStart} do ${addDaysToIsoDate(newWeekStart, 4)}. Trenutni teden se bo skril uporabnikom. Nadaljujem?`}
+              cancelLabel={t.cancel}
+              confirmLabel="Ustvari nov teden"
+              onCancel={() => setIsConfirmingNewWeek(false)}
+              onConfirm={() => {
+                void createNewWeek()
+              }}
+            />
+          ) : null}
         </div>
       </main>
     )
