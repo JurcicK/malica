@@ -166,14 +166,14 @@ export async function POST(request: Request) {
         bs: 'Ručni unos novog tjedna',
       }
 
-      const { data: activeOffers, error: activeOffersError } = await supabase
+      const { data: previousOffers, error: previousOffersError } = await supabase
         .from('weekly_offers')
         .select('id,starts_on,ends_on')
-        .eq('is_active', true)
+        .lt('starts_on', startsOn)
         .order('starts_on', { ascending: false })
 
-      if (activeOffersError) {
-        throw activeOffersError
+      if (previousOffersError) {
+        throw previousOffersError
       }
 
       let alwaysAvailableItems:
@@ -188,13 +188,13 @@ export async function POST(request: Request) {
           }>
         = []
 
-      if (body.copyAlwaysAvailable && (activeOffers?.length ?? 0) > 0) {
-        const activeOfferIds = activeOffers!.map((offer) => offer.id)
+      if (body.copyAlwaysAvailable && (previousOffers?.length ?? 0) > 0) {
+        const previousOfferIds = previousOffers!.map((offer) => offer.id)
 
         const { data: currentAlwaysItems, error: currentAlwaysItemsError } = await supabase
           .from('meal_items')
           .select('offer_id,category,service_date,meal_period,title,description,allergens,sort_order')
-          .in('offer_id', activeOfferIds)
+          .in('offer_id', previousOfferIds)
           .eq('is_always_available', true)
           .order('sort_order')
 
@@ -202,7 +202,7 @@ export async function POST(request: Request) {
           throw currentAlwaysItemsError
         }
 
-        const sourceOffer = activeOffers!.find((offer) =>
+        const sourceOffer = previousOffers!.find((offer) =>
           (currentAlwaysItems ?? []).some((item) => item.offer_id === offer.id)
         )
 
